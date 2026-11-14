@@ -140,46 +140,75 @@ configured values only affect the estimator; they do NOT change the radio.
 References: https://meshcore.ca/ and
 https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/radiolib/RadioLibWrappers.h
 
-### `!bots [page]`
+### \`!bots\` directory and \`!botsN\` details
 
-Send `!bots`, then `!bots 2`, etc. in `#test` or by DM. Each request returns one entry
-and is limited to 158 UTF-8 bytes (less in channels to allow for the radio name and regional scope). The command reads existing
-`complete_contact_tracking`, `repeater_contacts`, and the already-loaded
-`meshcore.contacts` cache. It never refreshes contacts, initiates discovery,
-reads message bodies, or scans RF. Only the reply uses RF.
+The directory is passive and uses previously stored/cached contact names.
+**It is a list of unverified bot-name candidates, not a verified census.**
+Any name containing "bot" (case-insensitively) can match, including false
+positives such as "Robot"; bot software without "bot" in its name is missed.
+The command never initiates discovery, queries a node or transmits extra
+probe packets. Only its normal reply uses RF airtime.
 
-Upstream inspection: [schema](https://github.com/agessaman/meshcore-bot/blob/main/modules/db_migrations.py)
-(blob `dc44b4e77b85b9e79c942b57701480372cf79386`) and
-[roles/advert flags](https://github.com/agessaman/meshcore-bot/blob/main/modules/enums.py)
-(blob `37012db14b326442aed238a76fe1019c0bae5dc3`) provide no verified bot field.
-Companion/repeater/roomserver/sensor roles, frequent traffic, command requests,
-and arbitrary raw advertisement fields are **not bot evidence**.
+Use the commands in \`#test\` (when allowed by \`[Bots_Command] channels\`) or by DM:
 
-`name?` means the observed display name contains `bot` anywhere (case-insensitive). This is an unverified
-candidate, not a confirmed bot. Robot, Bottom, Botany and WeatherBot all match;
-normal nodes can match too. Bots without this substring are missed.
-Identity matching/deduplication uses full public keys; displayed 12-hex prefixes
-can collide and must not be used as proof of identity. Latest stored names win
-within each table; complete tracking overrides repeater storage, and cached
-radio names override database names. Pages sort by full key and can shift
-when contacts change. Names are cleaned of control characters and shortened
-by UTF-8 bytes. No coordinates, raw advertisements, message history, credentials,
-or full keys are returned. Replies follow normal command access controls and the `[Bots_Command] channels` setting.
-The examples use `channels = #test`; keep this setting in your live config and restart
-after updating the plugin. The bot must already have the `#test` channel configured.
-Everyone in that channel can see candidate names/prefixes. DMs also remain supported.
-An empty `channels =` restores DM-only operation; omitting it uses global monitored channels.
+| Command | Purpose |
+| --- | --- |
+| \`!bots\` | Compact numbered names, **multiple entries per message** |
+| \`!bots 2\` or \`!bots page 2\` | Page 2 of the names-only directory |
+| \`!bots1\`, \`!bots2\`, \`!bots3\` | Details for directory entry 1, 2 or 3, **without a space** |
+| \`!bots info 2\` or \`!bots detail 2\` | Equivalent detailed view, with a space |
 
-This is an incomplete local directory, not a census or liveness check. Contacts
-may be imported, spoofed, old, or outside current reach; no online status is
-claimed. Missing tables/database/cache produce a partial-data notice. An empty
-list means no candidates in available records, not no bots on the mesh.
-No database migration, message collection, or additional retention is needed.
+Fictional directory example:
 
-Install `local/commands/bots.py` with the other local plugins and restart.
-Merge the credential-free `[Bots_Command]` section from
-[mesh-diagnostics.ini](examples/mesh-diagnostics.ini); keep live settings in ignored `local/config.ini`. No broker, token, channel secret or location is
-required. To disable, set `enabled = false`. The command is included in dynamic
-help; add `bots` manually if using a static `[Keywords] help` override.
+\`\`\`text
+Bots 1/1 (4)
+1. BotAlpha
+2. Community Bot
+3. SolarBot
+4. WeatherBot
+name? unverified. !botsN info
+\`\`\`
 
-Run isolated tests with `python -m unittest tests.test_local_bots -v`.
+Detailed \`!bots2\` output when local statistics are present:
+
+\`\`\`text
+Bot 2/4 (unverified)
+Community Bot
+ID 012345abcdef | companion
+Seen 3h ago | Ads 17
+SNR -7.5dB | Hops 2
+Stored local stats only
+\`\`\`
+
+The detailed reply reads \`complete_contact_tracking\` first and, when needed,
+\`repeater_contacts\`, to show stored public-key prefix, advertised device
+role/type, last-heard age, advertisement count, SNR and last recorded hop count.
+An absent value appears as \`n/a\`, not zero. The full public key and private
+message contents are never displayed. \`Seen 3h ago\` does **not** mean the bot
+is currently online. SNR/hops are existing contact metadata, not network-wide
+measurements or evidence of bot functionality.
+
+To minimize congestion, entries are numbered and names are abbreviated to the
+available UTF-8 byte budget. Pages are dynamically packed (158 bytes max for
+DMs; less in channels). The directory is sorted by observed name and full key;
+**indices and page boundaries can change if contacts change**, so rerun
+\`!bots\` before relying on \`!botsN\`. Multiple records with the same full key
+are deduplicated. Prefixes shown in details are only labels, not cryptographic
+proof of identity; names and advertised metadata can be spoofed.
+
+Data sources are \`complete_contact_tracking\`, \`repeater_contacts\`, and the
+already-loaded \`meshcore.contacts\` cache. Missing tables, databases or cache
+produce a partial-data notice. No bot-detection flag or reliable online presence
+indicator exists in the available upstream schema; no additional database
+migration, message collection, broker or credential is needed.
+
+Install \`local/commands/bots.py\`, merge \`[Bots_Command]\` from the
+[small config example](examples/mesh-diagnostics.ini), and restart the bot.
+A sample uses \`channels = #test\` (which must exist in the bot's channel
+settings); set \`channels =\` for DM-only operation. To disable, set
+\`enabled = false\`. Include \`bots\` in \`[Keywords] help\` if using the fixed
+help override. Run regression tests:
+
+\`\`\`sh
+python -m unittest tests.test_local_bots -v
+\`\`\`
