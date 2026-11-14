@@ -691,3 +691,10 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 - [meshcore-decoder](https://github.com/michaelhart/meshcore-decoder) by Michael Hart for client-side packet decoding and decryption in the web viewer
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
+
+
+## Local MeshCore diagnostics (feature branch)
+
+This fork includes six optional DM diagnostic commands: `!neighborlist`, `!heardme`, `!linktrend`, `!mypaths`, `!traffic`, and `!airtime`. Their source is in [`local/commands/`](local/commands/), with [documentation and installation steps](docs/local-mesh-diagnostics.md). The commands use locally recorded RF / SQLite observations; none silently initiates discovery.
+
+The [small configuration example](docs/examples/mesh-diagnostics.ini) shows the plugin settings. [`config.ini.diagnostics`](config.ini.diagnostics) is a **full sanitized template**, not a functional replacement for your live config: all credentials, private identity and network settings are absent or disabled. **Never commit a real `config.ini` or `local/config.ini`.**
