@@ -71,9 +71,9 @@ class PingDiagnosticsTests(unittest.TestCase):
         cfg = configparser.ConfigParser()
         cfg["Keywords"] = {"ping": "Pong! | {connection_info}"}
         self.rows = [
-            {"public_key": "7bcf33" + "0" * 58, "name": "Davisville III", "role": "repeater"},
-            {"public_key": "971942" + "0" * 58, "name": "Rusty_Solar Repeater", "role": "repeater"},
-            {"public_key": "b1b3e6" + "0" * 58, "name": "Bickford 🅱️", "role": "repeater"},
+            {"public_key": "d4e5f6" + "0" * 58, "name": "Repeater Alpha", "role": "repeater"},
+            {"public_key": "0a1b2c" + "0" * 58, "name": "Solar Relay Beta", "role": "repeater"},
+            {"public_key": "f1e2d3" + "0" * 58, "name": "Example Relay 🅱️", "role": "repeater"},
         ]
 
         async def get_repeaters(**_kwargs):
@@ -87,7 +87,7 @@ class PingDiagnosticsTests(unittest.TestCase):
 
     def ping(self, **kwargs):
         defaults = dict(
-            content="ping", is_dm=True, sender_id="Meshmusher232",
+            content="ping", is_dm=True, sender_id="ExampleNode",
             hops=4, snr=5.5, path=None, routing_info=None, replies=[],
         )
         defaults.update(kwargs)
@@ -98,48 +98,48 @@ class PingDiagnosticsTests(unittest.TestCase):
         return msg.replies[0]
 
     def test_four_hop_example_exact(self):
-        nodes = ["70cae2", "7bcf33", "971942", "b1b3e6"]
+        nodes = ["a1b2c3", "d4e5f6", "0a1b2c", "f1e2d3"]
         actual = self.ping(routing_info={"path_nodes": nodes})
         expected = (
-            "@[Meshmusher232] 4 hops, SNR 5.5\n"
-            "70cae2: n/a\n"
-            "7bcf33: Davisville III\n"
-            "971942: Rusty_Solar Repeater\n"
-            "b1b3e6: Bickford 🅱️"
+            "@[ExampleNode] 4 hops, SNR 5.5\n"
+            "a1b2c3: n/a\n"
+            "d4e5f6: Repeater Alpha\n"
+            "0a1b2c: Solar Relay Beta\n"
+            "f1e2d3: Example Relay 🅱️"
         )
         self.assertEqual(actual, expected)
 
     def test_path_fallback_and_missing_correlation(self):
         text = self.ping(
             routing_info=None,
-            path="70cae2,7bcf33,971942,b1b3e6 (4 hops via ROUTE_TYPE)",
+            path="a1b2c3,d4e5f6,0a1b2c,f1e2d3 (4 hops via ROUTE_TYPE)",
         )
-        self.assertIn("7bcf33: Davisville III", text)
+        self.assertIn("d4e5f6: Repeater Alpha", text)
         self.assertEqual(
             self.ping(path="Routed through 4 hops"),
-            "@[Meshmusher232] 4 hops, SNR 5.5",
+            "@[ExampleNode] 4 hops, SNR 5.5",
         )
 
     def test_path_hex_and_snr_zero(self):
         text = self.ping(
             snr=0,
-            routing_info={"path_length": 2, "bytes_per_hop": 3, "path_hex": "7bcf33971942"},
+            routing_info={"path_length": 2, "bytes_per_hop": 3, "path_hex": "d4e5f60a1b2c"},
             hops=2,
         )
         self.assertIn("2 hops, SNR 0", text)
-        self.assertIn("971942: Rusty_Solar Repeater", text)
+        self.assertIn("0a1b2c: Solar Relay Beta", text)
 
     def test_ambiguous_prefix_is_not_guessed(self):
         self.rows.append({
-            "public_key": "7bcf33" + "f" * 58, "name": "Another Repeater", "role": "repeater"
+            "public_key": "d4e5f6" + "f" * 58, "name": "Another Repeater", "role": "repeater"
         })
-        result = self.ping(hops=1, routing_info={"path_nodes": ["7bcf33"]})
-        self.assertIn("7bcf33: n/a", result)
+        result = self.ping(hops=1, routing_info={"path_nodes": ["d4e5f6"]})
+        self.assertIn("d4e5f6: n/a", result)
 
     def test_no_details_in_channel(self):
-        result = self.ping(is_dm=False, routing_info={"path_nodes": ["7bcf33"]})
+        result = self.ping(is_dm=False, routing_info={"path_nodes": ["d4e5f6"]})
         self.assertNotIn("Davisville", result)
-        self.assertEqual(result, "@[Meshmusher232] 4 hops, SNR 5.5")
+        self.assertEqual(result, "@[ExampleNode] 4 hops, SNR 5.5")
 
     def test_legacy_ping_escape_hatch(self):
         self.assertEqual(self.ping(content="pingplain"), "Pong! | test-info")
