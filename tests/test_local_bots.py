@@ -125,6 +125,29 @@ class TestBots(BaseLocalTest):
         self.assertEqual(set(row[5]), {"ping", "path", "test"})
         self.assertEqual(row[3], 3)
 
+    def test_official_direct_path_response_alone(self):
+        self.message("Requester", "!path", seconds=-15)
+        self.message("RouteHelper", "📡 Direct connection (0 hops)", seconds=-12)
+        result = self.query(self.plugin, "!bots")
+        self.assertIn("1. *RouteHelper", result)
+        detail = self.query(self.plugin, "!bots1")
+        self.assertIn("Reply 1x path", detail)
+
+    def test_test_reply_without_bot_name(self):
+        self.message("Requester", "!test", seconds=-15)
+        self.message("ServiceAgent", "ack @[Requester] | RSSI -111", seconds=-10)
+        result = self.query(self.plugin, "!bots")
+        self.assertIn("1. *ServiceAgent", result)
+
+    def test_repeated_same_command_is_not_multi_verification(self):
+        self.message("Requester", "!ping", seconds=-20)
+        self.message("ServiceAgent", "Pong!", seconds=-19)
+        self.message("ServiceAgent", "Pong! | extra", seconds=-18)
+        result = self.query(self.plugin, "!bots")
+        self.assertIn("1. *ServiceAgent", result)
+        self.assertNotIn("1. +ServiceAgent", result)
+        self.assertIn("Reply 2x ping", self.query(self.plugin, "!bots1"))
+
     def test_nonmatching_target_channel_window_and_dm(self):
         self.message("UserX", "!test", seconds=-30)
         self.message("NotBot", "ack @[AnotherUser] | Hello", seconds=-25)
