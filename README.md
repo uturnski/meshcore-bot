@@ -1,4 +1,37 @@
-# MeshCore Bot
+# MeshCore Bot — Local Command Diagnostics Fork
+
+> [!IMPORTANT]
+> **This is the [uturnski/meshcore-bot](https://github.com/uturnski/meshcore-bot) fork of [agessaman/meshcore-bot](https://github.com/agessaman/meshcore-bot).**
+>
+> **What makes this fork different?** Its main focus is **additional local command plugins** for MeshCore RF and network diagnostics: neighbour discovery history, SNR trends, observed routes, traffic, and airtime estimates. The existing upstream bot and its features remain the foundation; the new commands live in `local/commands/` rather than modifying core command modules.
+
+## What's new in this fork
+
+| Local command | What it tells you | Access |
+| --- | --- | --- |
+| `!neighborlist [page]` | Paginated snapshot of recorded zero-hop neighbours | Admin DM |
+| `!heardme [1h\|6h\|24h\|7d]` | How the bot received your DMs: SNR, history and paths (alias: `!seenme`) | DM |
+| `!linktrend [window]` | Historical SNR trends from saved direct-neighbour discovery cycles | DM |
+| `!mypaths [24h\|7d\|30d]` | Most common observed incoming DM routes | DM |
+| `!traffic [15m\|1h\|6h\|24h]` | Packet counts and types recorded by this bot | DM |
+| `!airtime BYTES [options]` | Estimated LoRa PHY transmit airtime for a packet | DM |
+
+**Key distinction:** These commands read previously collected local data or calculate an estimate. They do **not** start new neighbour discovery or generate test RF traffic. The built-in `!neighbors` command is separate and **does** initiate discovery. Observations are receiver-local; they are not complete network-wide measurements.
+
+**Start with this fork's diagnostics:**
+
+```bash
+git clone --branch feature/local-mesh-diagnostics https://github.com/uturnski/meshcore-bot.git
+cd meshcore-bot
+```
+
+For installation, dependencies, configuration, required telemetry collection, examples, limitations, and tests, see **[Local diagnostics guide](docs/local-mesh-diagnostics.md)**. Source files are in **[local/commands/](local/commands/)**. Use the **[minimal settings example](docs/examples/mesh-diagnostics.ini)** or inspect the **[full sanitized configuration reference](config.ini.diagnostics)**; neither should replace a working private configuration without review. **Never commit your live `config.ini`, `local/config.ini`, passwords, keys, coordinates, or network credentials.**
+
+**Upstream:** [agessaman/meshcore-bot](https://github.com/agessaman/meshcore-bot) · **Fork changes:** [compare `main` to this branch](https://github.com/uturnski/meshcore-bot/compare/main...feature/local-mesh-diagnostics)
+
+---
+
+## Original MeshCore Bot overview
 
 A Python bot that connects to MeshCore mesh networks via serial port, BLE, or TCP/IP. The bot responds to messages containing configured keywords, executes commands, and provides various data services including weather, solar conditions, and satellite pass information. A web viewer provides a browser-based dashboard for monitoring and managing the bot.
 
@@ -53,7 +86,7 @@ A Python bot that connects to MeshCore mesh networks via serial port, BLE, or TC
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/agessaman/meshcore-bot
+git clone --branch feature/local-mesh-diagnostics https://github.com/uturnski/meshcore-bot.git
 cd meshcore-bot
 ```
 
@@ -691,10 +724,3 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 - [meshcore-decoder](https://github.com/michaelhart/meshcore-decoder) by Michael Hart for client-side packet decoding and decryption in the web viewer
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
-
-
-## Local MeshCore diagnostics (feature branch)
-
-This fork includes six optional DM diagnostic commands: `!neighborlist`, `!heardme`, `!linktrend`, `!mypaths`, `!traffic`, and `!airtime`. Their source is in [`local/commands/`](local/commands/), with [documentation and installation steps](docs/local-mesh-diagnostics.md). The commands use locally recorded RF / SQLite observations; none silently initiates discovery.
-
-The [small configuration example](docs/examples/mesh-diagnostics.ini) shows the plugin settings. [`config.ini.diagnostics`](config.ini.diagnostics) is a **full sanitized template**, not a functional replacement for your live config: all credentials, private identity and network settings are absent or disabled. **Never commit a real `config.ini` or `local/config.ini`.**
