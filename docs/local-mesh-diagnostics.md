@@ -1,8 +1,8 @@
 # Local MeshCore bot diagnostics
 
-This public feature branch adds six **local, read-only diagnostic command plugins** to the upstream [`agessaman/meshcore-bot`](https://github.com/agessaman/meshcore-bot) bot. These commands fit in the normal bot plugin loader, require no additional dependencies, and run on Debian under `/opt/meshcore-bot` when `[Bot] local_dir_path = /opt/meshcore-bot/local`.
+This public feature branch adds six **local, read-only diagnostic command plugins** and one **route-aware alternative to the built-in ping** to the upstream [`agessaman/meshcore-bot`](https://github.com/agessaman/meshcore-bot) bot. These commands fit in the normal bot plugin loader, require no additional dependencies, and run on Debian under `/opt/meshcore-bot` when `[Bot] local_dir_path = /opt/meshcore-bot/local`.
 
-**Deployment files:** `local/commands/{neighborlist,heardme,linktrend,mypaths,traffic,airtime}.py` · [small config example](examples/mesh-diagnostics.ini) · [full sanitized config template](../config.ini.diagnostics). No real operator credentials, identity keys, network addresses or coordinates should be committed.
+**Deployment files:** `local/commands/{neighborlist,heardme,linktrend,mypaths,traffic,airtime}.py`, `modules/commands/alternatives/ping_diagnostics.py` · [small config example](examples/mesh-diagnostics.ini) · [full sanitized config template](../config.ini.diagnostics). No real operator credentials, identity keys, network addresses or coordinates should be committed.
 
 ## Supported commands
 
@@ -15,7 +15,8 @@ This public feature branch adds six **local, read-only diagnostic command plugin
 | `!linktrend HEXKEY [window]` | User DM | Inspect one neighbour by hex public-key prefix; example `!linktrend A53E9609 7d`. |
 | `!mypaths [24h\|7d\|30d]` | User DM | Top recorded inbound DM routes to the bot, with observation counts. Example `!mypaths 7d`. |
 | `!traffic [15m\|1h\|6h\|24h]` | User DM | Observer packet counts and top packet types, using `packet_stream`. Example `!traffic 6h`. |
-| `!airtime BYTES [sf=N bw=N cr=N pre=N tx=N]` | User DM | Estimate **one LoRa PHY transmission** airtime; optional `tx` scales the estimated sum. Example `!airtime 80 sf=11 bw=250 cr=5 tx=3`. |
+| `!airtime BYTES [sf=N bw=N cr=N pre=N tx=N]` | User DM | Estimate LoRa PHY airtime; optional `tx` multiplies assumed transmissions. Example `!airtime 80 sf=7 bw=62.5 cr=5 pre=32`. |
+| `!ping` / `!pingplain` | User DM; short replies on channels | **New alternative plugin**: sender, SNR, hop count, and stored names of each incoming route repeater; `!pingplain` uses the original configurable response. |
 
 All these plugins use a rate-limited, single-MeshCore-DM response (up to 158 UTF-8 bytes), and are DM-only; the `!neighborlist` plugin additionally requires administrator ACL authorization. Other commands are open to normal DM users unless the operator restricts them using bot-level controls.
 
@@ -41,7 +42,47 @@ Reads `packet_stream` rows with `type = 'packet'` and UNIX-second timestamps, co
 
 ### `!airtime`
 
-Uses the standard LoRa chirp-spread-spectrum airtime formula with **explicit header** and **PHY CRC enabled**, automatic low-data-rate optimization at symbol times of at least 16 ms. `BYTES` is the **entire LoRa PHY payload** (1–255), *not* the length of the MeshCore text. MeshCore framing, encryption and routing bytes must be included in the size for a realistic estimate. Defaults `SF10 / BW250 kHz / CR4/5 / preamble16` are **illustrative**; change `[Airtime_Command]` to your actual active modem profile. `tx=` means an assumed number of transmissions, not measured hops or retransmissions. No local radio configuration is read and no RF packet is transmitted.
+Uses the standard LoRa chirp-spread-spectrum airtime formula with **explicit header** and **PHY CRC enabled**, automatic low-data-rate optimization at symbol times of at least 16 ms. `BYTES` is the **entire LoRa PHY payload** (1–255), *not* the length of the MeshCore text. MeshCore framing, encryption and routing bytes must be included in the size for a realistic estimate. Example defaults `SF7 / BW62.5 kHz / CR4/5 / preamble32` suit the cited Canadian MeshCore profile, but you must verify your radio's current settings. `tx=` means an assumed number of transmissions, not measured hops or retransmissions. No local radio configuration is read and no RF packet is transmitted.
+
+### `!ping` (named-hop alternative)
+
+The upstream bot already owns the `ping` command. **Its local plugin loader
+skips duplicate primary command names**, so simply creating
+`local/commands/ping.py` cannot override it. This fork uses upstream's
+`modules/commands/alternatives/` plugin mechanism and one config entry:
+
+```ini
+[Plugin_Overrides]
+ping = ping_diagnostics
+
+[Ping_Command]
+enabled = true
+```
+
+With this enabled, a four-hop DM with known historical repeater names can look like:
+
+```text
+@[Meshmusher232] 4 hops, SNR 5.5
+70cae2: n/a
+7bcf33: Davisville III
+971942: Rusty_Solar Repeater
+b1b3e6: Bickford 🅱️
+```
+
+The hop prefixes are obtained from the **current incoming message's**
+correlated `routing_info.path_nodes` or its equivalent parsed route (one,
+two, or three bytes per hop). Full public-key prefixes are matched against
+stored repeater/roomserver names in `complete_contact_tracking` (or
+`repeater_manager`). An unknown or ambiguous prefix resolves to `n/a`;
+we never fabricate a route or guess between colliding prefixes. When a
+route is unavailable, the reply contains only sender, hop count and SNR.
+Channel pings also stay brief to conserve airtime.
+
+This reply is constrained to one 158-byte MeshCore DM, with UTF-8-safe name
+shortening when needed. **SNR is measured at the bot's receiver for the last
+RF hop**, not separately for each repeater. It never contacts individual
+repeaters or sends extra test packets. The built-in ping template from
+`[Keywords] ping` remains available through `!pingplain`.
 
 ## Install on Debian
 
@@ -54,9 +95,9 @@ sudo git switch feature/local-mesh-diagnostics
 # The plugins are under /opt/meshcore-bot/local/commands/.
 ```
 
-If your systemd service uses a different code checkout, copy only the six `.py` files to the active `[Bot] local_dir_path`/`commands/` directory; consult `systemctl cat meshcore-bot` to determine the actual working directory and config path.
+If your systemd service uses a different code checkout, copy the six local `.py` files to the active `[Bot] local_dir_path`/`commands/` directory **and** copy `modules/commands/alternatives/ping_diagnostics.py` into the matching installed core alternatives directory; consult `systemctl cat meshcore-bot` to determine the actual working directory and config path.
 
-Merge relevant `[..._Command]` sections from [the short example](examples/mesh-diagnostics.ini) into the existing local `config.ini` or `/opt/meshcore-bot/local/config.ini`. **Don't overwrite the live bot config with `config.ini.diagnostics`: it is a deliberately disabled/sanitized template.** It contains placeholder/blank identities, locations, broker connection settings, and a nonworking radio connection type.
+Merge relevant `[..._Command]` and `[Plugin_Overrides]` sections from [the short example](examples/mesh-diagnostics.ini) into the existing local `config.ini` or `/opt/meshcore-bot/local/config.ini`. **Don't overwrite the live bot config with `config.ini.diagnostics`: it is a deliberately disabled/sanitized template.** It contains placeholder/blank identities, locations, broker connection settings, and a nonworking radio connection type.
 
 ```bash
 # Syntax check (adjust venv path if necessary)
@@ -73,6 +114,7 @@ Try `!help`, `!help mypaths`, `!help traffic`, `!help airtime`, and each command
 ```bash
 python -m unittest discover -s tests -p test_local_diagnostics_extra.py -v
 python -m unittest discover -s tests -p test_local_linktrend.py -v
+python -m unittest discover -s tests -p test_ping_diagnostics.py -v
 ```
 
 Tests are isolated, in-memory/temporary SQLite tests using stubs for the base command; they do not communicate with a radio. Passing tests **do not** establish live systemd integration.
