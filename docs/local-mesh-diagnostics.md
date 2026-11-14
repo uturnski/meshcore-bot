@@ -140,74 +140,111 @@ configured values only affect the estimator; they do NOT change the radio.
 References: https://meshcore.ca/ and
 https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/radiolib/RadioLibWrappers.h
 
-### `!bots` directory and `!botsN` details
+### `!bots` passive responder directory and `!botsN` details
 
-The directory is passive and uses previously stored/cached contact names.
-**It is a list of unverified bot-name candidates, not a verified census.**
-Any name containing "bot" (case-insensitively) can match, including false
-positives such as "Robot"; bot software without "bot" in its name is missed.
-The command never initiates discovery, queries a node or transmits extra
-probe packets. Only its normal reply uses RF airtime.
+`!bots` discovers possible bot software by correlating **received PUBLIC**
+`!ping`, `!path`, and `!test` requests with recognizable responses
+on the same channel within a short interval. It also includes nodes
+with an indicative `Bot` name. **All tags are heuristic and unverified.**
+Messages to other users' encrypted DMs are not visible. This command NEVER
+sends automated pings, scans, or probes the mesh. Its replies use normal RF airtime.
 
-Use the commands in `#test` (when allowed by `[Bots_Command] channels`) or by DM:
-
-| Command | Purpose |
+| Marker | Evidence |
 | --- | --- |
-| `!bots` | Compact numbered names, **multiple entries per message** |
-| `!bots 2` or `!bots page 2` | Page 2 of the names-only directory |
-| `!bots1`, `!bots2`, `!bots3` | Details for directory entry 1, 2 or 3, **without a space** |
-| `!bots info 2` or `!bots detail 2` | Equivalent detailed view, with a space |
+| `+` | Observed replies to **two or more different** command types (ping/path/test) |
+| `*` | Observed a reply to **one** of these commands |
+| `?` | Name indicates `Bot`, but no matching command response observed |
 
-Fictional directory example:
+Matching uses the `bot` token (e.g. `Bot Alpha`) or CamelCase names like
+`WeatherBot`/`BotAlpha`. A name like `Abbot`, `Robot`, `Botany`, or `Bottom`
+no longer qualifies on name alone.
+
+Commands supported in your bot's configured `#test` channel or DM:
+
+| Command | Meaning |
+| --- | --- |
+| `!bots` | Multiple numbered names in one reply, sorted `+`, `*`, then `?` |
+| `!bots 2` / `!bots page 2` | Page 2 of the compact directory |
+| `!bots1`, `!bots2` | Details for directory item #1 or #2 (no space) |
+| `!bots info 2` / `!bots detail 2` | Equivalent detail request |
+
+Illustrative output with fictional names:
 
 ```text
 Bots 1/1 (4)
-1. BotAlpha
-2. Community Bot
-3. SolarBot
-4. WeatherBot
-name? unverified. !botsN info
+1. +RelayAssistant
+2. *WeatherNode
+3. ?BotAlpha
+4. ?SolarBot
++=2 *=1 ?=name (unverified)
 ```
 
-Detailed `!bots2` output when local statistics are present:
+The detail reply includes stored advert count, last-heard age, SNR, hop count,
+and the observed **reply count and types**, when enough data is available.
+Example of `!bots1`:
 
 ```text
-Bot 2/4 (unverified)
-Community Bot
+Bot 1/4 + RelayAssistant
 ID 012345abcdef | companion
-Seen 3h ago | Ads 17
-SNR -7.5dB | Hops 2
-Stored local stats only
+Seen 3h | SNR -7.5dB
+Ads 17 | Hops 2
+Reply 3x path,ping,test (1h)
+Local only; unverified
 ```
 
-The detailed reply reads `complete_contact_tracking` first and, when needed,
-`repeater_contacts`, to show stored public-key prefix, advertised device
-role/type, last-heard age, advertisement count, SNR and last recorded hop count.
-An absent value appears as `n/a`, not zero. The full public key and private
-message contents are never displayed. `Seen 3h ago` does **not** mean the bot
-is currently online. SNR/hops are existing contact metadata, not network-wide
-measurements or evidence of bot functionality.
+### How responder evidence is collected
 
-To minimize congestion, entries are numbered and names are abbreviated to the
-available UTF-8 byte budget. Pages are dynamically packed (158 bytes max for
-DMs; less in channels). The directory is sorted by observed name and full key;
-**indices and page boundaries can change if contacts change**, so rerun
-`!bots` before relying on `!botsN`. Multiple records with the same full key
-are deduplicated. Prefixes shown in details are only labels, not cryptographic
-proof of identity; names and advertised metadata can be spoofed.
+The existing upstream `[Stats_Command]` must record public messages:
 
-Data sources are `complete_contact_tracking`, `repeater_contacts`, and the
-already-loaded `meshcore.contacts` cache. Missing tables, databases or cache
-produce a partial-data notice. No bot-detection flag or reliable online presence
-indicator exists in the available upstream schema; no additional database
-migration, message collection, broker or credential is needed.
+```ini
+[Stats_Command]
+enabled = true
+collect_stats = true
+track_all_messages = true
+anonymize_users = false
 
-Install `local/commands/bots.py`, merge `[Bots_Command]` from the
-[small config example](examples/mesh-diagnostics.ini), and restart the bot.
-A sample uses `channels = #test` (which must exist in the bot's channel
-settings); set `channels =` for DM-only operation. To disable, set
-`enabled = false`. Include `bots` in `[Keywords] help` if using the fixed
-help override. Run regression tests:
+[Bots_Command]
+enabled = true
+channels = #test
+reply_window_seconds = 45
+evidence_retention_days = 30
+```
+
+`!bots` reads the newest 4,000 saved public messages from `message_stats` and
+recognizes the default MeshCore `Pong!` response, this fork's
+`@[requester] N hops, SNR ...` ping reply, the upstream `ack @[requester]`
+test response, and structured path replies (`HEX: name` or `Path: ...`).
+It only counts a reply if there is a preceding request of the **same** type
+on that channel within `reply_window_seconds`. Where the response names a
+requester, the requester must match. A new local SQLite table,
+`bot_command_responses`, retains per-reply type/time evidence for the configured
+retention period; repeated `!bots` reads do not double-count existing rows.
+Custom answer formats may not be recognized. The limited saved-message window
+can miss older observations; history starts only when collection is enabled.
+
+Channel sender names are extracted from user-supplied text and **not**
+cryptographically authenticated. Unrelated replies, spoofed sender names, or
+responses to other concurrent requests can produce false positives; `+` is
+stronger behavioural evidence, not proof of identity or software. Only link
+a displayed responder name to a public key when exactly one stored contact
+has that name. For ambiguous or uncatalogued names, the details show `ID n/a`.
+
+Raw message contents are read locally for detection but not included in
+responses; only the observed name, command type, time, and source DB row ID
+are retained in the evidence table. Without `message_stats`, saved contacts
+may still appear as `?`, but reply-based detection is unavailable.
+`anonymize_users = true` prevents linking stored sender names to known contacts.
+Correlations are local, not network-wide, and are not online-presence tests.
+
+The directories remain limited to 158 UTF-8 bytes for DMs and smaller limits
+for public channels. Names are truncated safely and list numbering can change
+as contacts or observations change. Refresh `!bots` before selecting `!botsN`.
+
+Install the updated `local/commands/bots.py`, merge the `[Bots_Command]`
+settings from [the config example](examples/mesh-diagnostics.ini), and restart.
+To disable, set `enabled = false`; for DM-only listing set `channels =`.
+Include `bots` in `[Keywords] help` if you use a static help override.
+Run isolated tests with:
 
 ```sh
 python -m unittest tests.test_local_bots -v
