@@ -2756,8 +2756,12 @@ enabled = true
 channels =
 
 [Bots_Command]
-# Passive name matches from saved/cached contacts. No RF scan.
-# !bots lists multiple names per message; !bots 2 selects the list page.
-# !bots1 or !bots info 1 shows stored contact details (unverified, not online status).
+# Passive bot candidates: correlated public ping/path/test replies OR indicative names.
+# + = observed 2+ distinct response types, * = one, ? = name only.
+# No automatic active RF probing. Not a verified bot directory.
+# Requires upstream Stats_Command collect_stats/track_all_messages enabled;
+# anonymize_users should be false for correlation to display names.
 enabled = true
 channels = #test
+reply_window_seconds = 45
+evidence_retention_days = 30
