@@ -725,3 +725,8 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 - [meshcore-decoder](https://github.com/michaelhart/meshcore-decoder) by Michael Hart for client-side packet decoding and decryption in the web viewer
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
+
+**Saved bot directory:** DM `!bots [page]` to list contacts whose names contain
+`bot` (case-insensitive). Results are unverified name matches from local saved
+contacts, may be stale/incomplete, and use one 158-byte page per request.
+See [command details](docs/local-mesh-diagnostics.md#bots-page).

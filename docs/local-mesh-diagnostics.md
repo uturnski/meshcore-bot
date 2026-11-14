@@ -139,3 +139,44 @@ Confirm `get radio` on the actual device; local networks can differ.
 configured values only affect the estimator; they do NOT change the radio.
 References: https://meshcore.ca/ and
 https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/radiolib/RadioLibWrappers.h
+
+### `!bots [page]`
+
+DM the bot with `!bots`, then `!bots 2`, etc. Each request returns one entry
+and is limited to 158 UTF-8 bytes. The command reads existing
+`complete_contact_tracking`, `repeater_contacts`, and the already-loaded
+`meshcore.contacts` cache. It never refreshes contacts, initiates discovery,
+reads message bodies, or scans RF. Only the reply uses RF.
+
+Upstream inspection: [schema](https://github.com/agessaman/meshcore-bot/blob/main/modules/db_migrations.py)
+(blob `dc44b4e77b85b9e79c942b57701480372cf79386`) and
+[roles/advert flags](https://github.com/agessaman/meshcore-bot/blob/main/modules/enums.py)
+(blob `37012db14b326442aed238a76fe1019c0bae5dc3`) provide no verified bot field.
+Companion/repeater/roomserver/sensor roles, frequent traffic, command requests,
+and arbitrary raw advertisement fields are **not bot evidence**.
+
+`name?` means the observed display name contains `bot` anywhere (case-insensitive). This is an unverified
+candidate, not a confirmed bot. Robot, Bottom, Botany and WeatherBot all match;
+normal nodes can match too. Bots without this substring are missed.
+Identity matching/deduplication uses full public keys; displayed 12-hex prefixes
+can collide and must not be used as proof of identity. Latest stored names win
+within each table; complete tracking overrides repeater storage, and cached
+radio names override database names. Pages sort by full key and can shift
+when contacts change. Names are cleaned of control characters and shortened
+by UTF-8 bytes. No coordinates, raw advertisements, message history, credentials,
+or full keys are returned. Replies are DM-only and follow normal command access
+controls. Any permitted DM sender can see these candidate names/prefixes.
+
+This is an incomplete local directory, not a census or liveness check. Contacts
+may be imported, spoofed, old, or outside current reach; no online status is
+claimed. Missing tables/database/cache produce a partial-data notice. An empty
+list means no candidates in available records, not no bots on the mesh.
+No database migration, message collection, or additional retention is needed.
+
+Install `local/commands/bots.py` with the other local plugins and restart.
+Merge the credential-free `[Bots_Command]` section from
+[mesh-diagnostics.ini](examples/mesh-diagnostics.ini); keep live settings in ignored `local/config.ini`. No broker, token, channel secret or location is
+required. To disable, set `enabled = false`. The command is included in dynamic
+help; add `bots` manually if using a static `[Keywords] help` override.
+
+Run isolated tests with `python -m unittest tests.test_local_bots -v`.

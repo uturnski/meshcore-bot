@@ -2754,3 +2754,8 @@ channels =
 [Neighborlist_Command]
 enabled = true
 channels =
+
+[Bots_Command]
+# Passive DM-only name matches from saved/cached contacts. No RF scan.
+enabled = true
+channels =

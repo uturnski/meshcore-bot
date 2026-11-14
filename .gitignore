@@ -125,6 +125,7 @@ Thumbs.db
 logs/
 *.log.*
 local/*
+!local/commands/
 config.ini
 config.min.ini
 *.db
@@ -185,6 +186,7 @@ local/commands/*
 !local/commands/mypaths.py
 !local/commands/traffic.py
 !local/commands/airtime.py
+!local/commands/bots.py
 local/service_plugins/*
 !local/service_plugins/.gitkeep
 
