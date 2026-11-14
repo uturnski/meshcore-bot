@@ -59,14 +59,14 @@ ping = ping_diagnostics
 enabled = true
 ```
 
-With this enabled, a four-hop DM with known historical repeater names can look like:
+With this enabled, a four-hop DM can look like the following **fictional example**:
 
 ```text
-@[Meshmusher232] 4 hops, SNR 5.5
-70cae2: n/a
-7bcf33: Davisville III
-971942: Rusty_Solar Repeater
-b1b3e6: Bickford 🅱️
+@[ExampleNode] 4 hops, SNR 5.5
+a1b2c3: n/a
+d4e5f6: Repeater Alpha
+0a1b2c: Solar Relay Beta
+f1e2d3: Example Relay 🅱️
 ```
 
 The hop prefixes are obtained from the **current incoming message's**
