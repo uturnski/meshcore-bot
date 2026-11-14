@@ -2738,10 +2738,10 @@ enabled = true
 channels =
 # Illustrative modem settings for the LoRa airtime calculation. Replace with
 # your actual modem parameters; defaults do NOT automatically read the radio.
-default_sf = 10
-default_bw_khz = 250
+default_sf = 7
+default_bw_khz = 62.5
 default_cr_denominator = 5
-default_preamble_symbols = 16
+default_preamble_symbols = 32
 default_transmissions = 1
 
 [Linktrend_Command]
