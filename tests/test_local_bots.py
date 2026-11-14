@@ -2,7 +2,6 @@
 import asyncio
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
-import re
 import sqlite3
 from types import SimpleNamespace
 from tests.test_local_diagnostics_extra import BaseLocalTest, get_plugin
@@ -132,11 +131,8 @@ class TestBots(BaseLocalTest):
         for arg in ["0", "-1", "x", "2 extra", "9"*5000]:
             self.assertIn("Usage:", self.query(self.plugin, "!bots " + arg))
         self.assertIn("Usage:", self.query(self.plugin, "!bots0"))
-        self.assertIn("Only", self.query(self.plugin, "!bots99") if self._add_one() else "")
-
-    def _add_one(self):
         self.add("a"*64, "TestBot")
-        return True
+        self.assertIn("Only", self.query(self.plugin, "!bots99"))
 
     def test_missing_schema_and_cache_fallback(self):
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
