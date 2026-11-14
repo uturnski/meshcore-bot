@@ -82,7 +82,7 @@ def snr_display(value):
 class BotsCommand(BaseCommand):
     name = "bots"
     keywords = ["bots"]
-    description = "List local bot-name candidates and observed public ping responders"
+    description = "List locally observed ping/path/test responders and name candidates"
     short_description = description
     usage = "bots [page] | botsN | bots info N"
     examples = ["bots", "bots page 2", "bots1"]
@@ -109,8 +109,8 @@ class BotsCommand(BaseCommand):
 
     def get_help_text(self):
         return (
-            "bots [page]: * means observed public ping reply; ? means name-only. "
-            "botsN: stored contact stats and reply count. All unverified."
+            "bots [page]: +=multiple commands, *=single command, ?=name only. "
+            "botsN: local contact stats and responder evidence. Unverified."
         )
 
 
@@ -294,7 +294,7 @@ class BotsCommand(BaseCommand):
         else:
             limited = True
 
-        observed, evidence_partial = self._ping_responses()
+        observed, evidence_partial = self._command_responses()
         limited = limited or evidence_partial
         by_name = {}
         for key, name in contacts.items():
@@ -306,16 +306,16 @@ class BotsCommand(BaseCommand):
             norm = str(name).casefold()
             evidence = observed.get(norm)
             if evidence and len(by_name.get(norm, [])) == 1:
-                rows.append((key, label(name, 90), "ping~", evidence[1], evidence[2]))
+                rows.append((key, label(name, 90), "multi~" if len(evidence[3]) >= 2 else "cmd~", evidence[1], evidence[2], evidence[3]))
                 matched.add(norm)
             elif BOT_NAME.search(name):
-                rows.append((key, label(name, 90), "name?", 0, None))
-        for norm, (name, count, last) in observed.items():
+                rows.append((key, label(name, 90), "name?", 0, None, ()))
+        for norm, (name, count, last, kinds) in observed.items():
             if norm not in matched:
                 # Channel sender label may be spoofed/ambiguous; no verified key.
-                rows.append(("", label(name, 90), "ping~", count, last))
+                rows.append(("", label(name, 90), "multi~" if len(kinds) >= 2 else "cmd~", count, last, kinds))
         rows.sort(key=lambda row: (
-            0 if row[2] == "ping~" else 1, row[1].casefold(), row[0]
+            {"multi~": 0, "cmd~": 1, "name?": 2}.get(row[2], 3), row[1].casefold(), row[0]
         ))
         return rows, limited
 
@@ -354,7 +354,7 @@ class BotsCommand(BaseCommand):
         return {}
 
     def _details(self, index, records, limited):
-        key, name, evidence, reply_count, last_reply = records[index - 1]
+        key, name, evidence, reply_count, last_reply, kinds = records[index - 1]
         stats = self._recorded_stats(key) if key else {}
         role = label(stats.get("role") or stats.get("device_type") or "unknown", 18)
         last = age(stats.get("last_heard") or stats.get("last_seen"))
@@ -367,8 +367,9 @@ class BotsCommand(BaseCommand):
             f"Bot {index}/{len(records)} ({evidence})",
             label(name, 42),
             f"ID {key[:12] if key else 'n/a'} | {role}",
-            (f"Ping {reply_count} | seen {age(datetime.fromtimestamp(last_reply, timezone.utc).isoformat())} ago"
-             if reply_count and last_reply else "Ping replies 0"),
+            (f"Replied {reply_count}x ({','.join(kinds)})" if reply_count else "Replies 0"),
+            (f"Last reply {age(datetime.fromtimestamp(last_reply, timezone.utc).isoformat())} ago"
+             if last_reply else "Last reply n/a"),
             f"Seen {last} ago | Ads {ads}" if last != "n/a" else f"Seen n/a | Ads {ads}",
             f"SNR {snr} | Hops {hop_text}",
             "Partial local stats" if limited else "Local stats only",
@@ -379,8 +380,8 @@ class BotsCommand(BaseCommand):
         """Greedily pack numbered *names* under an exact conservative byte cap."""
         count = len(records)
         footer = (
-            "Partial; *=ping ?=name"
-            if limited else "*=ping ?=name; unverified"
+            "Partial; +=multi *=reply ?=name"
+            if limited else "+=multi *=reply ?=name (unverified)"
         )
         # Reserve the largest possible header, independent of final page count.
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
@@ -389,7 +390,7 @@ class BotsCommand(BaseCommand):
         # channel packet; long names are abbreviated rather than hidden.
         max_line = max(8, min(34, (space - 1) // 2))
         lines = [
-            f"{i}. {'*' if record[2] == 'ping~' else '?'}{label(record[1], max(1, max_line - len(f'{i}. *.'.encode('utf-8'))))}"
+            f"{i}. {'*' if record[2] == 'multi~' else '*' if record[2] == 'cmd~' else '?'}{label(record[1], max(1, max_line - len(f'{i}. *.'.encode('utf-8'))))}"
             for i, record in enumerate(records, start=1)
         ]
         pages = []
@@ -452,7 +453,7 @@ class BotsCommand(BaseCommand):
         records, limited = self._contacts()
         if not records:
             return await self._respond_lines(message, [
-                "No bot-name candidates or observed ping replies.",
+                "No bot-name candidates or command responders.",
                 "Local data incomplete." if limited else "No observed ping evidence."
             ])
 
