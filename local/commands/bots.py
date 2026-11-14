@@ -29,7 +29,7 @@ class BotsCommand(BaseCommand):
     usage = "bots [page]"
     examples = ["bots", "bots 2"]
     category = "analytics"
-    requires_dm = True
+    requires_dm = False
     cooldown_seconds = 3
 
     def __init__(self, bot):
@@ -40,7 +40,7 @@ class BotsCommand(BaseCommand):
         return self.enabled and super().can_execute(message, skip_channel_check=skip_channel_check)
 
     def get_help_text(self):
-        return "DM !bots [page]: saved bot candidates. Names are unverified; records may be stale/incomplete."
+        return "!bots [page]: saved bot candidates. Names are unverified; records may be stale/incomplete."
 
     def _contacts(self):
         """Return normalized identities and whether a source was unavailable."""
@@ -77,27 +77,33 @@ class BotsCommand(BaseCommand):
                       for key, name in contacts.items()
                       if BOT_NAME.search(name)), limited
 
+    async def _respond(self, message, text):
+        # Channel budgets also account for the radio name and regional scope.
+        budget = max(0, min(158, self.get_max_message_length(message)))
+        text = text.encode('utf-8')[:budget].decode('utf-8', errors='ignore')
+        return await self.send_response(message, text)
+
     async def execute(self, message: MeshMessage) -> bool:
-        if not message.is_dm:
+        if not self.is_channel_allowed(message):
             return False
         parts = message.content.strip().removeprefix('!').split()
         if len(parts) > 2 or (len(parts) == 2 and
                              (not re.fullmatch(r'[1-9][0-9]{0,5}', parts[1]))):
-            return await self.send_response(message, "DM: !bots [page], page must be a positive integer.")
+            return await self._respond(message, "Usage: !bots [page], page must be a positive integer.")
         page = int(parts[1]) if len(parts) == 2 else 1
         records, limited = self._contacts()
         caveat = "Local only; stale/incomplete. name?=unverified."
         if limited:
             caveat = "Partial local data; stale/incomplete. name?=unverified."
         if not records:
-            return await self.send_response(message, "No saved bot candidates. " + caveat)
+            return await self._respond(message, "No saved bot candidates. " + caveat)
         # One entry per request: bounded airtime even with huge contact sets. A 12-hex
         # prefix is a display label, never an identity match (which uses the full key).
         if page > len(records):
-            return await self.send_response(message, f"Only {len(records)} bots pages. " + caveat)
+            return await self._respond(message, f"Only {len(records)} bots pages. " + caveat)
         key, name, evidence = records[page - 1]
         header = f"Bots {page}/{len(records)} ({evidence})\n{key[:12]} "
         footer = "\n" + caveat
         budget = min(158, self.get_max_message_length(message))
         name = label(name, max(0, budget - len((header + footer).encode('utf-8'))))
-        return await self.send_response(message, header + name + footer)
+        return await self._respond(message, header + name + footer)

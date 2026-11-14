@@ -12,6 +12,7 @@ class TestBots(BaseLocalTest):
         self.module = get_plugin('bots')
         self.plugin = self.module.BotsCommand(self.bot)
         self.bot.meshcore = SimpleNamespace(contacts={})
+        self.plugin.is_channel_allowed = lambda msg: msg.is_dm or getattr(msg, 'channel', None) == '#test'
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
             for table, stamp in [('complete_contact_tracking', 'last_heard'), ('repeater_contacts', 'last_seen')]:
                 conn.execute(f'CREATE TABLE {table}(public_key TEXT, name TEXT, {stamp} TEXT)')
@@ -64,7 +65,7 @@ class TestBots(BaseLocalTest):
         self.bot.db_manager = None
         self.assertIn('Cache Bot', self.query(self.plugin, '!bots'))
 
-    def test_dm_only_and_disabled(self):
+    def test_other_channels_and_disabled(self):
         message = SimpleNamespace(content='!bots', is_dm=False, replies=[])
         self.assertFalse(asyncio.run(self.plugin.execute(message)))
         self.assertEqual(message.replies, [])
@@ -77,3 +78,26 @@ class TestBots(BaseLocalTest):
         records, _ = self.plugin._contacts()
         self.assertEqual(len(records), 5)
         self.assertTrue(all(row[2] == 'name?' for row in records))
+
+    def test_test_channel_reply_and_smaller_budget(self):
+        self.add('d'*64, 'WeatherBot ' + '\U0001f916'*40)
+        message = SimpleNamespace(content='!bots', is_dm=False, channel='#test', replies=[])
+        self.plugin.get_max_message_length = lambda msg: 110
+        self.assertFalse(self.plugin.requires_dm)
+        self.assertTrue(asyncio.run(self.plugin.execute(message)))
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn('WeatherBot', message.replies[0])
+        self.assertLessEqual(len(message.replies[0].encode('utf-8')), 110)
+        for request in ['!bots 0', '!bots 99']:
+            message.content = request
+            self.assertTrue(asyncio.run(self.plugin.execute(message)))
+            self.assertLessEqual(len(message.replies[-1].encode('utf-8')), 110)
+
+    def test_examples_enable_test_channel(self):
+        from configparser import ConfigParser
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        for name in ['docs/examples/mesh-diagnostics.ini', 'config.ini.diagnostics']:
+            config = ConfigParser(interpolation=None)
+            config.read(root / name, encoding='utf-8')
+            self.assertEqual(config.get('Bots_Command', 'channels'), '#test')

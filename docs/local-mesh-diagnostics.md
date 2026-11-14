@@ -142,8 +142,8 @@ https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/radiolib/RadioLib
 
 ### `!bots [page]`
 
-DM the bot with `!bots`, then `!bots 2`, etc. Each request returns one entry
-and is limited to 158 UTF-8 bytes. The command reads existing
+Send `!bots`, then `!bots 2`, etc. in `#test` or by DM. Each request returns one entry
+and is limited to 158 UTF-8 bytes (less in channels to allow for the radio name and regional scope). The command reads existing
 `complete_contact_tracking`, `repeater_contacts`, and the already-loaded
 `meshcore.contacts` cache. It never refreshes contacts, initiates discovery,
 reads message bodies, or scans RF. Only the reply uses RF.
@@ -164,8 +164,11 @@ within each table; complete tracking overrides repeater storage, and cached
 radio names override database names. Pages sort by full key and can shift
 when contacts change. Names are cleaned of control characters and shortened
 by UTF-8 bytes. No coordinates, raw advertisements, message history, credentials,
-or full keys are returned. Replies are DM-only and follow normal command access
-controls. Any permitted DM sender can see these candidate names/prefixes.
+or full keys are returned. Replies follow normal command access controls and the `[Bots_Command] channels` setting.
+The examples use `channels = #test`; keep this setting in your live config and restart
+after updating the plugin. The bot must already have the `#test` channel configured.
+Everyone in that channel can see candidate names/prefixes. DMs also remain supported.
+An empty `channels =` restores DM-only operation; omitting it uses global monitored channels.
 
 This is an incomplete local directory, not a census or liveness check. Contacts
 may be imported, spoofed, old, or outside current reach; no online status is

@@ -726,7 +726,7 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
 
-**Saved bot directory:** DM `!bots [page]` to list contacts whose names contain
+**Saved bot directory:** Send `!bots [page]` in `#test` or by DM to list contacts whose names contain
 `bot` (case-insensitive). Results are unverified name matches from local saved
 contacts, may be stale/incomplete, and use one 158-byte page per request.
 See [command details](docs/local-mesh-diagnostics.md#bots-page).
