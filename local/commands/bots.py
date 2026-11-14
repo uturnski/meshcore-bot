@@ -3,7 +3,7 @@
 !bots [page] / !bots page N  -> numbered, paginated name list
 !botsN / !bots info N        -> local details for entry N (N is a list index)
 
-Names containing "bot" are unverified guesses; MeshCore has no bot flag.
+Names alone are guesses; correlated public ping replies are stronger but unverified.
 """
 from datetime import datetime, timezone
 import math
@@ -82,7 +82,7 @@ def snr_display(value):
 class BotsCommand(BaseCommand):
     name = "bots"
     keywords = ["bots"]
-    description = "Local bot-name directory; !botsN shows recorded contact stats"
+    description = "List local bot-name candidates and observed public ping responders"
     short_description = description
     usage = "bots [page] | botsN | bots info N"
     examples = ["bots", "bots page 2", "bots1"]
@@ -109,9 +109,8 @@ class BotsCommand(BaseCommand):
 
     def get_help_text(self):
         return (
-            "bots [page]: numbered bot-name list. botsN (e.g. bots2) or "
-            "bots info N: stored last-seen/advert/SNR/hops. "
-            "Name matches only; unverified."
+            "bots [page]: * means observed public ping reply; ? means name-only. "
+            "botsN: stored contact stats and reply count. All unverified."
         )
 
 
@@ -254,11 +253,30 @@ class BotsCommand(BaseCommand):
         else:
             limited = True
 
-        return sorted(
-            ((key, label(name, 90), "name?") for key, name in contacts.items()
-             if BOT_NAME.search(name)),
-            key=lambda row: (row[1].casefold(), row[0]),
-        ), limited
+        observed, evidence_partial = self._ping_responses()
+        limited = limited or evidence_partial
+        by_name = {}
+        for key, name in contacts.items():
+            by_name.setdefault(str(name).casefold(), []).append(key)
+
+        rows = []
+        matched = set()
+        for key, name in contacts.items():
+            norm = str(name).casefold()
+            evidence = observed.get(norm)
+            if evidence and len(by_name.get(norm, [])) == 1:
+                rows.append((key, label(name, 90), "ping~", evidence[1], evidence[2]))
+                matched.add(norm)
+            elif BOT_NAME.search(name):
+                rows.append((key, label(name, 90), "name?", 0, None))
+        for norm, (name, count, last) in observed.items():
+            if norm not in matched:
+                # Channel sender label may be spoofed/ambiguous; no verified key.
+                rows.append(("", label(name, 90), "ping~", count, last))
+        rows.sort(key=lambda row: (
+            0 if row[2] == "ping~" else 1, row[1].casefold(), row[0]
+        ))
+        return rows, limited
 
     def _recorded_stats(self, full_key):
         """Select the freshest stored contact row, using optional schema fields."""
@@ -295,8 +313,8 @@ class BotsCommand(BaseCommand):
         return {}
 
     def _details(self, index, records, limited):
-        key, name, _ = records[index - 1]
-        stats = self._recorded_stats(key)
+        key, name, evidence, reply_count, last_reply = records[index - 1]
+        stats = self._recorded_stats(key) if key else {}
         role = label(stats.get("role") or stats.get("device_type") or "unknown", 18)
         last = age(stats.get("last_heard") or stats.get("last_seen"))
         adverts = stats.get("advert_count")
@@ -305,12 +323,14 @@ class BotsCommand(BaseCommand):
         hops = stats.get("hop_count")
         hop_text = str(hops) if isinstance(hops, int) and 0 <= hops < 255 else "n/a"
         lines = [
-            f"Bot {index}/{len(records)} (unverified)",
+            f"Bot {index}/{len(records)} ({evidence})",
             label(name, 42),
-            f"ID {key[:12]} | {role}",
+            f"ID {key[:12] if key else 'n/a'} | {role}",
+            (f"Ping {reply_count} | seen {age(datetime.fromtimestamp(last_reply, timezone.utc).isoformat())} ago"
+             if reply_count and last_reply else "Ping replies 0"),
             f"Seen {last} ago | Ads {ads}" if last != "n/a" else f"Seen n/a | Ads {ads}",
             f"SNR {snr} | Hops {hop_text}",
-            "Partial local stats" if limited else "Stored local stats only",
+            "Partial local stats" if limited else "Local stats only",
         ]
         return lines
 
@@ -318,8 +338,8 @@ class BotsCommand(BaseCommand):
         """Greedily pack numbered *names* under an exact conservative byte cap."""
         count = len(records)
         footer = (
-            "Partial; name? unverified. !botsN info"
-            if limited else "name? unverified. !botsN info"
+            "Partial; *=ping ?=name"
+            if limited else "*=ping ?=name; unverified"
         )
         # Reserve the largest possible header, independent of final page count.
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
@@ -328,7 +348,7 @@ class BotsCommand(BaseCommand):
         # channel packet; long names are abbreviated rather than hidden.
         max_line = max(8, min(34, (space - 1) // 2))
         lines = [
-            f"{i}. {label(record[1], max(1, max_line - len(f'{i}. '.encode('utf-8'))))}"
+            f"{i}. {'*' if record[2] == 'ping~' else '?'}{label(record[1], max(1, max_line - len(f'{i}. *.'.encode('utf-8'))))}"
             for i, record in enumerate(records, start=1)
         ]
         pages = []
@@ -391,8 +411,8 @@ class BotsCommand(BaseCommand):
         records, limited = self._contacts()
         if not records:
             return await self._respond_lines(message, [
-                "No saved bot-name candidates.",
-                "Local data incomplete." if limited else "Names are unverified."
+                "No bot-name candidates or observed ping replies.",
+                "Local data incomplete." if limited else "No observed ping evidence."
             ])
 
         if mode == "details":
