@@ -114,6 +114,111 @@ class BotsCommand(BaseCommand):
             "Name matches only; unverified."
         )
 
+
+    def _ping_responses(self):
+        """Persist correlated public ping replies as *unverified* bot evidence.
+
+        Never transmits ping, never inspects anyone else's DMs, and never
+        treats a display name as a cryptographically verified identity.
+        """
+        found = {}
+        db = getattr(self.bot, "db_manager", None)
+        if db is None:
+            return found, True
+        now = int(time.time())
+        try:
+            window = int(self.get_config_value(
+                "Bots_Command", "ping_reply_window_seconds",
+                fallback=45, value_type="int"
+            ))
+            retention = int(self.get_config_value(
+                "Bots_Command", "ping_evidence_retention_days",
+                fallback=30, value_type="int"
+            ))
+        except (ValueError, TypeError):
+            window, retention = 45, 30
+        window = max(5, min(window, 120))
+        retention = max(1, min(retention, 180))
+        cutoff = now - retention * 86400
+        try:
+            with db.connection() as conn:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS bot_ping_responses (
+                         stats_row_id INTEGER PRIMARY KEY,
+                         sender_name TEXT NOT NULL,
+                         channel TEXT NOT NULL,
+                         observed_at INTEGER NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    "DELETE FROM bot_ping_responses WHERE observed_at < ?", (cutoff,)
+                )
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(message_stats)")
+                }
+                required = {
+                    "id", "timestamp", "sender_id", "channel", "content", "is_dm"
+                }
+                if required.issubset(columns):
+                    clock = ("COALESCE(CAST(strftime('%s', created_at) AS INTEGER), timestamp)"
+                             if "created_at" in columns else "timestamp")
+                    rows = conn.execute(
+                        f"""SELECT id, {clock}, sender_id, channel, content
+                            FROM message_stats
+                            WHERE is_dm = 0
+                            ORDER BY id DESC LIMIT 4000"""
+                    ).fetchall()
+                    requests = {}
+                    for stat_id, observed, sender, channel, body in reversed(rows):
+                        try:
+                            stamp = int(observed)
+                        except (ValueError, TypeError):
+                            continue
+                        if stamp < cutoff or stamp > now + 60:
+                            continue
+                        source = str(sender or "").strip()
+                        ch = str(channel or "").strip().casefold()
+                        message = str(body or "").strip()
+                        if (not ch or not source or
+                            source.casefold() in UNATTRIBUTABLE or
+                            ANON_SENDER.fullmatch(source)):
+                            continue
+                        if PING_REQUEST.match(message):
+                            requests.setdefault(ch, []).append((stamp, source))
+                            requests[ch] = requests[ch][-30:]
+                            continue
+                        match = PONG_REPLY.match(message) or NAMED_PING_REPLY.match(message)
+                        if not match:
+                            continue
+                        target = match.groupdict().get("target")
+                        relevant = any(
+                            0 <= stamp - request_stamp <= window and
+                            source.casefold() != request_sender.casefold() and
+                            (not target or target.casefold() == request_sender.casefold())
+                            for request_stamp, request_sender in reversed(requests.get(ch, []))
+                        )
+                        if relevant:
+                            conn.execute(
+                                """INSERT OR IGNORE INTO bot_ping_responses
+                                   (stats_row_id, sender_name, channel, observed_at)
+                                   VALUES (?, ?, ?, ?)""",
+                                (stat_id, source, ch, stamp),
+                            )
+                conn.commit()
+                evidence = conn.execute(
+                    """SELECT sender_name, COUNT(*), MAX(observed_at)
+                         FROM bot_ping_responses
+                         WHERE observed_at >= ?
+                         GROUP BY lower(sender_name)""",
+                    (cutoff,),
+                ).fetchall()
+                for sender, count, last in evidence:
+                    found[str(sender).casefold()] = (str(sender), int(count), int(last))
+                return found, not required.issubset(columns)
+        except (AttributeError, sqlite3.Error, OSError) as exc:
+            self.logger.debug("bots ping evidence unavailable: %s", exc)
+            return {}, True
+
     def _contacts(self):
         """Return (full_key, name, evidence), sorted by name, plus incomplete flag."""
         contacts = {}
