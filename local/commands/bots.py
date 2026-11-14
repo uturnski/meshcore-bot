@@ -208,8 +208,13 @@ class BotsCommand(BaseCommand):
         # Reserve the largest possible header, independent of final page count.
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
         space = max(1, budget - reserve - len(("\n" + footer).encode("utf-8")))
-        lines = [f"{i}. {label(record[1], 29)}"
-                 for i, record in enumerate(records, start=1)]
+        # Leave enough room for at least two entries even in a small
+        # channel packet; long names are abbreviated rather than hidden.
+        max_line = max(8, min(34, (space - 1) // 2))
+        lines = [
+            f"{i}. {label(record[1], max(1, max_line - len(f'{i}. '.encode('utf-8'))))}"
+            for i, record in enumerate(records, start=1)
+        ]
         pages = []
         page = []
         used = 0
