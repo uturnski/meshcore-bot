@@ -2757,5 +2757,7 @@ channels =
 
 [Bots_Command]
 # Passive name matches from saved/cached contacts. No RF scan.
+# !bots lists multiple names per message; !bots 2 selects the list page.
+# !bots1 or !bots info 1 shows stored contact details (unverified, not online status).
 enabled = true
 channels = #test
