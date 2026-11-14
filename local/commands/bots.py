@@ -19,12 +19,12 @@ from modules.models import MeshMessage
 KEY = re.compile(r"[0-9a-fA-F]{64}")
 # Explicit bot token or CamelCase Bot marker; avoid Abbot, Robot, Botany.
 BOT_NAME = re.compile(
-    r"(?i:(?:^|[\\s_-])bot(?=$|[\\s_-]))|[a-z0-9]Bot(?=$|[\\s_-])|^Bot(?=[A-Z])"
+    r"(?i:(?:^|[\s_-])bot(?=$|[\s_-]))|[a-z0-9]Bot(?=$|[\s_-])|^Bot(?=[A-Z])"
 )
-PING_REQUEST = re.compile(r"^\\s*(?:@\\[[^\\]\\r\\n]{1,64}\\]\\s*)?!?ping(?:\\s|$)", re.I)
-PONG_REPLY = re.compile(r"^\\s*(?:@\\[(?P<target>[^\\]\\r\\n]{1,64})\\]\\s*)?pong(?:!|\\b)", re.I)
+PING_REQUEST = re.compile(r"^\s*(?:@\[[^\]\r\n]{1,64}\]\s*)?!?ping(?:\s|$)", re.I)
+PONG_REPLY = re.compile(r"^\s*(?:@\[(?P<target>[^\]\r\n]{1,64})\]\s*)?pong(?:!|\b)", re.I)
 NAMED_PING_REPLY = re.compile(
-    r"^\\s*@\\[(?P<target>[^\\]\\r\\n]{1,64})\\]\\s+\\d{1,3}\\s+hops?,\\s*SNR\\b", re.I
+    r"^\s*@\[(?P<target>[^\]\r\n]{1,64})\]\s+\d{1,3}\s+hops?,\s*SNR\b", re.I
 )
 ANON_SENDER = re.compile(r"^user_[0-9a-f]{8}$", re.I)
 UNATTRIBUTABLE = {"", "unknown", "channel user"}
