@@ -470,6 +470,9 @@ admin_commands = repeater,webviewer,reload,channelpause,neighbors,neighborlist,n
 # Local plugins: You can add your own command and service plugins without editing
 # bot code. Put command plugins in local/commands/ and service plugins in
 # local/service_plugins/. Use local/config.ini for their settings. See docs/local-plugins.md.
+# Route-aware ping alternative (modules/commands/alternatives/ping_diagnostics.py)
+ping = ping_diagnostics
+
 [Service_Overrides]
 # Service Overrides - Use alternative service plugin implementations
 # Format: service_name = alternative_file_name
