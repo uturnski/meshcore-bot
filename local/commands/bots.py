@@ -363,16 +363,18 @@ class BotsCommand(BaseCommand):
         snr = snr_display(stats.get("snr"))
         hops = stats.get("hop_count")
         hop_text = str(hops) if isinstance(hops, int) and 0 <= hops < 255 else "n/a"
+        badge = "+" if evidence == "multi~" else "*" if evidence == "cmd~" else "?"
+        kind_summary = ",".join(kinds) if kinds else "none"
+        last_response = age(
+            datetime.fromtimestamp(last_reply, timezone.utc).isoformat()
+        ) if last_reply else "n/a"
         lines = [
-            f"Bot {index}/{len(records)} ({evidence})",
-            label(name, 42),
+            f"Bot {index}/{len(records)} {badge} {label(name, 30)}",
             f"ID {key[:12] if key else 'n/a'} | {role}",
-            (f"Replied {reply_count}x ({','.join(kinds)})" if reply_count else "Replies 0"),
-            (f"Last reply {age(datetime.fromtimestamp(last_reply, timezone.utc).isoformat())} ago"
-             if last_reply else "Last reply n/a"),
-            f"Seen {last} ago | Ads {ads}" if last != "n/a" else f"Seen n/a | Ads {ads}",
-            f"SNR {snr} | Hops {hop_text}",
-            "Partial local stats" if limited else "Local stats only",
+            f"Seen {last} | SNR {snr}",
+            f"Ads {ads} | Hops {hop_text}",
+            f"Reply {reply_count}x {kind_summary} ({last_response})",
+            "Partial data" if limited else "Local only; unverified",
         ]
         return lines
 
@@ -380,8 +382,8 @@ class BotsCommand(BaseCommand):
         """Greedily pack numbered *names* under an exact conservative byte cap."""
         count = len(records)
         footer = (
-            "Partial; +=multi *=reply ?=name"
-            if limited else "+=multi *=reply ?=name (unverified)"
+            "partial +=2 *=1 ?=name"
+            if limited else "+=2 *=1 ?=name (unverified)"
         )
         # Reserve the largest possible header, independent of final page count.
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
