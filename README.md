@@ -16,7 +16,7 @@
 | `!traffic [15m\|1h\|6h\|24h]` | Packet counts and types recorded by this bot | DM |
 | `!airtime BYTES [options]` | Estimated LoRa PHY transmit airtime for a packet | DM |
 | `!ping` / `!pingplain` | Incoming route hop count, SNR and repeater names (`pingplain` preserves legacy reply) | DM; channel summary |
-| `!bots` / `!botsN` | Multiple numbered bot-name candidates per page; details include last heard and stored contact statistics | DM; configured channels |
+| `!bots` / `!botsN` | Passive directory: `+` replies to 2+ command types, `*` replies to one, `?` name-only; `!botsN` shows observed commands and local stats | DM; configured channels |
 
 **Key distinction:** These commands read previously collected local data or calculate an estimate. They do **not** start new neighbour discovery or generate test RF traffic. The built-in `!neighbors` command is separate and **does** initiate discovery. The ping alternative requires `[Plugin_Overrides] ping = ping_diagnostics` in your active configuration. Observations are receiver-local; they are not complete network-wide measurements.
 
@@ -727,4 +727,4 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
 
-**Saved bot directory:** Send `!bots` in `#test` or by DM to show several numbered names per reply. `!bots 2` lists the next page; `!bots1` or `!bots info 1` shows stored details such as last seen, advertised role, advertisement count, SNR and hops. These are unverified name matches, not confirmed bots or live status. See [command details](docs/local-mesh-diagnostics.md#bots-directory-and-botsn-details).
+**Saved bot directory:** `!bots` passively correlates visible public `!ping`, `!path`, and `!test` requests with recognizable replies (no new probes), plus stricter `Bot` name matches. `+` marks replies to at least two distinct commands, `*` one command, `?` name-only. `!bots 2` lists the next page; `!botsN` shows stored replies, last heard and RF statistics. These are **unverified behavioural indications**, not authenticated bot identities or live status. Requires `[Stats_Command] collect_stats=true` and `track_all_messages=true`; read [details](docs/local-mesh-diagnostics.md#bots-passive-responder-directory-and-botsn-details).
