@@ -182,6 +182,9 @@ local/commands/*
 !local/commands/neighborlist.py
 !local/commands/heardme.py
 !local/commands/linktrend.py
+!local/commands/mypaths.py
+!local/commands/traffic.py
+!local/commands/airtime.py
 local/service_plugins/*
 !local/service_plugins/.gitkeep
 
