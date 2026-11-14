@@ -83,3 +83,17 @@ Tests are isolated, in-memory/temporary SQLite tests using stubs for the base co
 - The root `config.ini.diagnostics` is intentionally a safe public template, with identifying configuration removed; it is **not** operational out of the box.
 - Public branch code is unauthenticated for non-admin DM commands but uses normal upstream user and RF rate limiters and single-message responses.
 - No GitHub CI secret, MQTT auth token, private network address or real GPS location is needed to use these commands.
+
+### Canada (Southern Ontario) airtime preset
+
+MeshCore Canada standard: 910.525 MHz / 62.5 kHz / SF7 / CR4/5. MeshCore
+firmware currently uses 32 preamble symbols at SF7 (16 for SF9+).
+Frequency does not affect the PHY airtime formula. Default example:
+`[Airtime_Command] default_sf=7, default_bw_khz=62.5,
+default_cr_denominator=5, default_preamble_symbols=32`.
+Confirm `get radio` on the actual device; local networks can differ.
+
+`!airtime` accepts fractional bandwidth such as `bw=62.5`. The
+configured values only affect the estimator; they do NOT change the radio.
+References: https://meshcore.ca/ and
+https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/radiolib/RadioLibWrappers.h
