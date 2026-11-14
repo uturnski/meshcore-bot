@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **This is the [uturnski/meshcore-bot](https://github.com/uturnski/meshcore-bot) fork of [agessaman/meshcore-bot](https://github.com/agessaman/meshcore-bot).**
 >
-> **What makes this fork different?** Its main focus is **additional local command plugins and a route-aware ping alternative** for MeshCore RF and network diagnostics: neighbour discovery history, SNR trends, observed routes, traffic, and airtime estimates. The existing upstream bot and its features remain the foundation; six added commands live in `local/commands/`. The built-in `!ping` is overridden using the upstream-supported `modules/commands/alternatives/` system, without modifying its core source file.
+> **What makes this fork different?** Its main focus is **additional local command plugins and a route-aware ping alternative** for MeshCore RF and network diagnostics: neighbour discovery history, SNR trends, observed routes, traffic, and airtime estimates. The existing upstream bot and its features remain the foundation; seven added commands live in `local/commands/`. The built-in `!ping` is overridden using the upstream-supported `modules/commands/alternatives/` system, without modifying its core source file.
 
 ## What's new in this fork
 
@@ -16,6 +16,7 @@
 | `!traffic [15m\|1h\|6h\|24h]` | Packet counts and types recorded by this bot | DM |
 | `!airtime BYTES [options]` | Estimated LoRa PHY transmit airtime for a packet | DM |
 | `!ping` / `!pingplain` | Incoming route hop count, SNR and repeater names (`pingplain` preserves legacy reply) | DM; channel summary |
+| `!bots` / `!botsN` | Multiple numbered bot-name candidates per page; details include last heard and stored contact statistics | DM; configured channels |
 
 **Key distinction:** These commands read previously collected local data or calculate an estimate. They do **not** start new neighbour discovery or generate test RF traffic. The built-in `!neighbors` command is separate and **does** initiate discovery. The ping alternative requires `[Plugin_Overrides] ping = ping_diagnostics` in your active configuration. Observations are receiver-local; they are not complete network-wide measurements.
 
@@ -726,7 +727,4 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for th
 
 The provenance of the `modules/solar_conditions.py` rewrite is recorded in [docs/solar-conditions-provenance.md](docs/solar-conditions-provenance.md).
 
-**Saved bot directory:** Send `!bots [page]` in `#test` or by DM to list contacts whose names contain
-`bot` (case-insensitive). Results are unverified name matches from local saved
-contacts, may be stale/incomplete, and use one 158-byte page per request.
-See [command details](docs/local-mesh-diagnostics.md#bots-page).
+**Saved bot directory:** Send `!bots` in `#test` or by DM to show several numbered names per reply. `!bots 2` lists the next page; `!bots1` or `!bots info 1` shows stored details such as last seen, advertised role, advertisement count, SNR and hops. These are unverified name matches, not confirmed bots or live status. See [command details](docs/local-mesh-diagnostics.md#bots-directory-and-botsn-details).
