@@ -12,7 +12,7 @@ from modules.models import MeshMessage
 
 SETTINGS = {
     "sf": ("default_sf", 7, 12),
-    "bw": ("default_bw_khz", 125, 500),
+    "bw": ("default_bw_khz", 62.5, 500),
     "cr": ("default_cr_denominator", 5, 8),
     "pre": ("default_preamble_symbols", 6, 32),
     "tx": ("default_transmissions", 1, 20),
@@ -39,8 +39,8 @@ class AirTimeCommand(BaseCommand):
     keywords = ["airtime"]
     description = "Estimate LoRa packet airtime from PHY size and modem settings"
     short_description = "Approximate LoRa RF airtime without transmitting"
-    usage = "airtime BYTES [sf=10 bw=250 cr=5 pre=16 tx=1]"
-    examples = ["airtime 80", "airtime 80 sf=11 bw=250 cr=5 tx=3"]
+    usage = "airtime BYTES [sf=7 bw=62.5 cr=5 pre=32 tx=1]"
+    examples = ["airtime 80", "airtime 80 sf=7 bw=62.5 cr=5 tx=3"]
     category = "meshcore_info"
     requires_dm = True
     cooldown_seconds = 10
@@ -55,7 +55,7 @@ class AirTimeCommand(BaseCommand):
         return self.command_enabled and super().can_execute(message, skip_channel_check=skip_channel_check)
 
     def get_help_text(self):
-        return "DM: airtime BYTES [sf=10 bw=250 cr=5 pre=16 tx=1]. Bytes=whole LoRa packet; set params to your modem. Estimate only."
+        return "DM: airtime BYTES [sf=7 bw=62.5 cr=5 pre=32 tx=1]. Bytes=whole LoRa packet; verify actual modem profile."
 
     async def _reply(self, message, text):
         budget = self.get_max_message_length(message)
@@ -65,14 +65,14 @@ class AirTimeCommand(BaseCommand):
 
     def _defaults(self):
         vals = {}
-        initial = {"sf": 10, "bw": 250, "cr": 5, "pre": 16, "tx": 1}
+        initial = {"sf": 7, "bw": 62.5, "cr": 5, "pre": 32, "tx": 1}
         for k, (field, low, high) in SETTINGS.items():
-            val = self.get_config_value("Airtime_Command", field, fallback=initial[k], value_type="int")
+            val = self.get_config_value("Airtime_Command", field, fallback=initial[k], value_type="str" if k == "bw" else "int")
             try:
-                val = int(val)
+                val = float(val) if k == "bw" else int(val)
             except (TypeError, ValueError):
                 val = initial[k]
-            if k == "bw" and val not in (125, 250, 500):
+            if k == "bw" and val not in (62.5, 125, 250, 500):
                 val = initial[k]
             elif not low <= val <= high:
                 val = initial[k]
@@ -91,21 +91,27 @@ class AirTimeCommand(BaseCommand):
         values = self._defaults()
         seen = set()
         for token in tokens[2:]:
-            match = re.fullmatch(r"(sf|bw|cr|pre|tx)=(\d+)", token, re.IGNORECASE)
+            match = re.fullmatch(r"(sf|bw|cr|pre|tx)=(\d+(?:\.\d+)?)", token, re.IGNORECASE)
             if not match:
                 return await self._reply(message, self.get_help_text())
-            key, value = match.group(1).lower(), int(match.group(2))
+            key = match.group(1).lower()
+            if key != "bw" and "." in match.group(2):
+                return await self._reply(message, self.get_help_text())
+            try:
+                value = float(match.group(2)) if key == "bw" else int(match.group(2))
+            except ValueError:
+                return await self._reply(message, self.get_help_text())
             if key in seen:
                 return await self._reply(message, "Airtime: duplicate option")
             seen.add(key)
             _, low, high = SETTINGS[key]
-            if not low <= value <= high or (key == "bw" and value not in (125, 250, 500)):
+            if not low <= value <= high or (key == "bw" and value not in (62.5, 125, 250, 500)):
                 return await self._reply(message, f"Airtime: invalid {key}; see !help airtime")
             values[key] = value
         air_ms = lora_airtime_ms(size, **{k: values[k] for k in ("sf", "bw", "cr", "pre")})
         s = f"{air_ms / 1000:.3f}s"
         suffix = f" / {values['tx']} TX sum {air_ms * values['tx']/1000:.2f}s" if values["tx"] > 1 else ""
         return await self._reply(message, (
-            f"LoRa {size}B SF{values['sf']} BW{values['bw']}k CR4/{values['cr']} pre{values['pre']}\n"
+            f"LoRa {size}B SF{values['sf']} BW{values['bw']:g}k CR4/{values['cr']} pre{values['pre']}\n"
             f"Airtime: {s}{suffix}\nEstimated PHY TX; no retries counted"
         ))
