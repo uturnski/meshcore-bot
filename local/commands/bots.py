@@ -149,7 +149,10 @@ class BotsCommand(BaseCommand):
         # Built-in path replies list hexadecimal route prefixes with names,
         # or use an explicit "Path:" label. This is a heuristic, not proof.
         path_reply = re.compile(
-            r"^\s*(?:path\s*:|[0-9a-f]{2}(?:[0-9a-f]{2}){0,2}\s*:\s*\S)", re.I
+            r"^\s*(?:(?:📡\s*)?(?:path\s*:|direct connection\b)"
+            r"|[0-9a-f]{2}(?:[0-9a-f]{2}){0,2}\s*:\s*\S"
+            r"|❌\s*(?:no path\b|no valid hex\b|error decoding path\b))",
+            re.I
         )
         try:
             with db.connection() as conn:
