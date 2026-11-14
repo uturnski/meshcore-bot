@@ -114,11 +114,12 @@ class BotsCommand(BaseCommand):
         )
 
 
-    def _ping_responses(self):
-        """Persist correlated public ping replies as *unverified* bot evidence.
+    def _command_responses(self):
+        """Passively correlate public channel command requests and structured replies.
 
-        Never transmits ping, never inspects anyone else's DMs, and never
-        treats a display name as a cryptographically verified identity.
+        Evidence is tied to the *display name*, NOT an authenticated MeshCore
+        public key. No outgoing probes, no other users' private DMs. Events are
+        retained in an on-disk idempotent table keyed to message_stats row ID.
         """
         found = {}
         db = getattr(self.bot, "db_manager", None)
@@ -127,11 +128,10 @@ class BotsCommand(BaseCommand):
         now = int(time.time())
         try:
             window = int(self.get_config_value(
-                "Bots_Command", "ping_reply_window_seconds",
-                fallback=45, value_type="int"
+                "Bots_Command", "reply_window_seconds", fallback=45, value_type="int"
             ))
             retention = int(self.get_config_value(
-                "Bots_Command", "ping_evidence_retention_days",
+                "Bots_Command", "evidence_retention_days",
                 fallback=30, value_type="int"
             ))
         except (ValueError, TypeError):
@@ -139,18 +139,31 @@ class BotsCommand(BaseCommand):
         window = max(5, min(window, 120))
         retention = max(1, min(retention, 180))
         cutoff = now - retention * 86400
+        request_pattern = re.compile(
+            r"^\s*(?:@\[[^\]\r\n]{1,64}\]\s*)?!?(ping|path|test)(?:\s|$)", re.I
+        )
+        # The default upstream test reply is: ack @[requester] | SNR... .
+        test_reply = re.compile(
+            r"^\s*ack\s+@\[(?P<target>[^\]\r\n]{1,64})\](?:\s|\||$)", re.I
+        )
+        # Built-in path replies list hexadecimal route prefixes with names,
+        # or use an explicit "Path:" label. This is a heuristic, not proof.
+        path_reply = re.compile(
+            r"^\s*(?:path\s*:|[0-9a-f]{2}(?:[0-9a-f]{2}){0,2}\s*:\s*\S)", re.I
+        )
         try:
             with db.connection() as conn:
                 conn.execute(
-                    """CREATE TABLE IF NOT EXISTS bot_ping_responses (
-                         stats_row_id INTEGER PRIMARY KEY,
-                         sender_name TEXT NOT NULL,
-                         channel TEXT NOT NULL,
-                         observed_at INTEGER NOT NULL
+                    """CREATE TABLE IF NOT EXISTS bot_command_responses (
+                        stats_row_id INTEGER PRIMARY KEY,
+                        sender_name TEXT NOT NULL,
+                        channel TEXT NOT NULL,
+                        command_name TEXT NOT NULL,
+                        observed_at INTEGER NOT NULL
                     )"""
                 )
                 conn.execute(
-                    "DELETE FROM bot_ping_responses WHERE observed_at < ?", (cutoff,)
+                    "DELETE FROM bot_command_responses WHERE observed_at < ?", (cutoff,)
                 )
                 columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(message_stats)")
@@ -159,18 +172,21 @@ class BotsCommand(BaseCommand):
                     "id", "timestamp", "sender_id", "channel", "content", "is_dm"
                 }
                 if required.issubset(columns):
-                    clock = ("COALESCE(CAST(strftime('%s', created_at) AS INTEGER), timestamp)"
-                             if "created_at" in columns else "timestamp")
-                    rows = conn.execute(
+                    clock = (
+                        "COALESCE(CAST(strftime('%s', created_at) AS INTEGER), timestamp)"
+                        if "created_at" in columns else "timestamp"
+                    )
+                    # Newest bounded history: low cost, no full-message export.
+                    history = conn.execute(
                         f"""SELECT id, {clock}, sender_id, channel, content
                             FROM message_stats
                             WHERE is_dm = 0
                             ORDER BY id DESC LIMIT 4000"""
                     ).fetchall()
                     requests = {}
-                    for stat_id, observed, sender, channel, body in reversed(rows):
+                    for stat_id, timestamp, sender, channel, body in reversed(history):
                         try:
-                            stamp = int(observed)
+                            stamp = int(timestamp)
                         except (ValueError, TypeError):
                             continue
                         if stamp < cutoff or stamp > now + 60:
@@ -182,40 +198,65 @@ class BotsCommand(BaseCommand):
                             source.casefold() in UNATTRIBUTABLE or
                             ANON_SENDER.fullmatch(source)):
                             continue
-                        if PING_REQUEST.match(message):
-                            requests.setdefault(ch, []).append((stamp, source))
-                            requests[ch] = requests[ch][-30:]
+                        request = request_pattern.match(message)
+                        if request:
+                            command = request.group(1).lower()
+                            requests.setdefault(ch, []).append(
+                                (stamp, source, command)
+                            )
+                            requests[ch] = requests[ch][-60:]
                             continue
+
+                        reply_kind = None
+                        target = None
                         match = PONG_REPLY.match(message) or NAMED_PING_REPLY.match(message)
-                        if not match:
+                        if match:
+                            reply_kind, target = "ping", match.groupdict().get("target")
+                        else:
+                            match = test_reply.match(message)
+                            if match:
+                                reply_kind, target = "test", match.group("target")
+                            elif path_reply.match(message):
+                                reply_kind = "path"
+                        if not reply_kind:
                             continue
-                        target = match.groupdict().get("target")
-                        relevant = any(
-                            0 <= stamp - request_stamp <= window and
-                            source.casefold() != request_sender.casefold() and
-                            (not target or target.casefold() == request_sender.casefold())
-                            for request_stamp, request_sender in reversed(requests.get(ch, []))
+
+                        correlated = any(
+                            req_kind == reply_kind
+                            and 0 <= stamp - req_stamp <= window
+                            and source.casefold() != req_sender.casefold()
+                            and (not target or target.casefold() == req_sender.casefold())
+                            for req_stamp, req_sender, req_kind
+                            in reversed(requests.get(ch, []))
                         )
-                        if relevant:
+                        if correlated:
                             conn.execute(
-                                """INSERT OR IGNORE INTO bot_ping_responses
-                                   (stats_row_id, sender_name, channel, observed_at)
-                                   VALUES (?, ?, ?, ?)""",
-                                (stat_id, source, ch, stamp),
+                                """INSERT OR IGNORE INTO bot_command_responses
+                                   (stats_row_id, sender_name, channel,
+                                    command_name, observed_at)
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                (stat_id, source, ch, reply_kind, stamp),
                             )
                 conn.commit()
-                evidence = conn.execute(
-                    """SELECT sender_name, COUNT(*), MAX(observed_at)
-                         FROM bot_ping_responses
+                rows = conn.execute(
+                    """SELECT sender_name, command_name, COUNT(*), MAX(observed_at)
+                         FROM bot_command_responses
                          WHERE observed_at >= ?
-                         GROUP BY lower(sender_name)""",
+                         GROUP BY lower(sender_name), command_name""",
                     (cutoff,),
                 ).fetchall()
-                for sender, count, last in evidence:
-                    found[str(sender).casefold()] = (str(sender), int(count), int(last))
-                return found, not required.issubset(columns)
+                for name, kind, count, last in rows:
+                    key = str(name).casefold()
+                    prior = found.setdefault(key, [str(name), 0, 0, set()])
+                    prior[1] += int(count)
+                    prior[2] = max(prior[2], int(last))
+                    prior[3].add(str(kind))
+                return {
+                    key: (item[0], item[1], item[2], tuple(sorted(item[3])))
+                    for key, item in found.items()
+                }, not required.issubset(columns)
         except (AttributeError, sqlite3.Error, OSError) as exc:
-            self.logger.debug("bots ping evidence unavailable: %s", exc)
+            self.logger.debug("bot responder evidence unavailable: %s", exc)
             return {}, True
 
     def _contacts(self):
