@@ -178,6 +178,10 @@ dist/deb-build/
 local/config.ini
 local/commands/*
 !local/commands/.gitkeep
+# Maintained local diagnostic commands (tracked on the feature branch)
+!local/commands/neighborlist.py
+!local/commands/heardme.py
+!local/commands/linktrend.py
 local/service_plugins/*
 !local/service_plugins/.gitkeep
 
