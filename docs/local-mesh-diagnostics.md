@@ -1,44 +1,85 @@
-# Local diagnostic commands for MeshCore Bot
+# Local MeshCore bot diagnostics
 
-This branch adds three independently loadable commands under `local/commands/`:
+This public feature branch adds six **local, read-only diagnostic command plugins** to the upstream [`agessaman/meshcore-bot`](https://github.com/agessaman/meshcore-bot) bot. These commands fit in the normal bot plugin loader, require no additional dependencies, and run on Debian under `/opt/meshcore-bot` when `[Bot] local_dir_path = /opt/meshcore-bot/local`.
 
-| Command | Audience | Example | Purpose |
-| --- | --- | --- | --- |
-| `!neighborlist [page]` | Admin only, DM | `!neighborlist 2` | Paginate the most recent stored zero-hop neighbour discovery snapshot (three entries per DM). |
-| `!heardme [1h\|6h\|24h\|7d]` (alias `!seenme`) | Community users, DM | `!heardme 7d` | Show current DM SNR/hop count and *recorded* past DM observations. |
-| `!linktrend [window]` | Community users, DM | `!linktrend 30d` | Summarize observed direct-neighbour SNR measurements. |
-| `!linktrend weak [window]` | Community users, DM | `!linktrend weak` | Show weakest nodes in the latest discovery cycle. |
-| `!linktrend HEXKEY [window]` | Community users, DM | `!linktrend A53E9609 7d` | Compare recorded measurements of one neighbor by public-key prefix. |
+**Deployment files:** `local/commands/{neighborlist,heardme,linktrend,mypaths,traffic,airtime}.py` · [small config example](examples/mesh-diagnostics.ini) · [full sanitized config template](../config.ini.diagnostics). No real operator credentials, identity keys, network addresses or coordinates should be committed.
 
-LinkTrend windows are `7d`, `30d` (default), `90d` and `365d`. All commands reply in a single short DM to minimize RF airtime. `!linktrend` is **read-only**: it does not start discovery, ping a radio or query live reception. A neighbour missing from a discovery cycle is **not** proved offline.
+## Supported commands
 
-## Installing on Debian
+| Command | Who can use it | Function and examples |
+|---|---|---|
+| `!neighborlist [page]` | Admin DM | Paginated list of the most recently saved zero-hop neighbour discovery snapshot. Example `!neighborlist 2`. Does **not** initiate discovery. |
+| `!heardme [1h\|6h\|24h\|7d]` | User DM | Latest bot-received DM SNR, history and path counts. Alias `!seenme`; example `!heardme 7d`. |
+| `!linktrend [7d\|30d\|90d\|365d]` | User DM | Summarize SNR from stored direct-neighbour discovery cycles; example `!linktrend 30d`. |
+| `!linktrend weak [window]` | User DM | Weakest neighbours from the most recent saved cycle; example `!linktrend weak`. |
+| `!linktrend HEXKEY [window]` | User DM | Inspect one neighbour by hex public-key prefix; example `!linktrend A53E9609 7d`. |
+| `!mypaths [24h\|7d\|30d]` | User DM | Top recorded inbound DM routes to the bot, with observation counts. Example `!mypaths 7d`. |
+| `!traffic [15m\|1h\|6h\|24h]` | User DM | Observer packet counts and top packet types, using `packet_stream`. Example `!traffic 6h`. |
+| `!airtime BYTES [sf=N bw=N cr=N pre=N tx=N]` | User DM | Estimate **one LoRa PHY transmission** airtime; optional `tx` scales the estimated sum. Example `!airtime 80 sf=11 bw=250 cr=5 tx=3`. |
 
-The custom command files must be present in the directory the active config uses for `[Bot] local_dir_path`, usually `/opt/meshcore-bot/local/commands` in a source checkout.
+All these plugins use a rate-limited, single-MeshCore-DM response (up to 158 UTF-8 bytes), and are DM-only; the `!neighborlist` plugin additionally requires administrator ACL authorization. Other commands are open to normal DM users unless the operator restricts them using bot-level controls.
 
-```sh
-# On a checkout of this feature branch:
-sudo install -d /opt/meshcore-bot/local/commands
-sudo install -m 644 local/commands/neighborlist.py local/commands/heardme.py local/commands/linktrend.py /opt/meshcore-bot/local/commands/
-sudo systemctl restart meshcore-bot
-sudo journalctl -u meshcore-bot -n 200 --no-pager | grep -Ei 'loaded local plugin|neighborlist|heardme|linktrend'
+## What the numbers actually measure
+
+### `!heardme` / `!mypaths`
+
+Upstream `StatsCommand` records received messages in `message_stats(timestamp, sender_id, is_dm, snr, hops, path, ...)`. These plugins **do not** measure sender-to-every-repeater reachability, loss, or successful delivery rate. For multi-hop traffic, SNR describes reception **at the bot's radio from the final hop**. `!mypaths` counts only stored DM rows with parseable hex route strings; rows that say only "Routed through N hops" provide insufficient path evidence.
+
+**Privacy limitation:** Upstream `message_stats.sender_id` is a *contact display label* rather than a full authenticated public key. Two contacts sharing a name can have mixed history. Changing a contact name can split its history. Users should not treat `!mypaths` / `!heardme` as cryptographically verified personal histories. `!mypaths` requires a DM and does not accept an arbitrary other username.
+
+For `!mypaths`, store received history with `[Stats_Command] collect_stats = true` and `track_all_messages = true`. `anonymize_users = true` is supported for lookups: the plugin uses the upstream hash of the display label. History availability depends on `[Stats_Command] data_retention_days` (in the uploaded full configuration it is **7 days**). Requests for 30-day history cannot return records already pruned; raise retention **only if you accept the privacy/storage tradeoff**.
+
+### `!linktrend` / `!neighborlist`
+
+These query `neighbor_observations`, saved by `[PacketCapture] neighbors_enabled = true` when the radio completes zero-hop discovery. Each row is an actual direct neighbour reception measurement recorded in a *discrete discovery cycle*, not a continuous signal trace. A missing row for a neighbour **does not prove an outage**. History requires several discovery cycles; scheduled cycles are normally separated by 12 hours or more. A radio change means older measurements from another self-public-key are excluded by `!linktrend`.
+
+`!neighborlist` is admin-only; the separate built-in `!neighbors` command initiates RF discovery and is expensive. `!linktrend` itself performs no RF discovery.
+
+### `!traffic`
+
+Reads `packet_stream` rows with `type = 'packet'` and UNIX-second timestamps, counting **packets observed at this particular receiver**, not unique mesh-wide transmissions, total airtime, congestion, actual collision count, or delivery rate. Traffic levels depend on antenna/coverage and whether the web-viewer integration is writing rows. When the denormalized `payload_type_name` column exists, the plugin reports the top observed categories (older schemas omit the categories). The configured packet-stream retention may be as short as three days.
+
+### `!airtime`
+
+Uses the standard LoRa chirp-spread-spectrum airtime formula with **explicit header** and **PHY CRC enabled**, automatic low-data-rate optimization at symbol times of at least 16 ms. `BYTES` is the **entire LoRa PHY payload** (1–255), *not* the length of the MeshCore text. MeshCore framing, encryption and routing bytes must be included in the size for a realistic estimate. Defaults `SF10 / BW250 kHz / CR4/5 / preamble16` are **illustrative**; change `[Airtime_Command]` to your actual active modem profile. `tx=` means an assumed number of transmissions, not measured hops or retransmissions. No local radio configuration is read and no RF packet is transmitted.
+
+## Install on Debian
+
+On a source checkout at `/opt/meshcore-bot`, switch to the feature branch (confirm you have no uncommitted edits):
+
+```bash
+cd /opt/meshcore-bot
+sudo git fetch origin feature/local-mesh-diagnostics
+sudo git switch feature/local-mesh-diagnostics
+# The plugins are under /opt/meshcore-bot/local/commands/.
 ```
 
-If your working checkout *is* `/opt/meshcore-bot`, no file copies are needed after a checkout or pull: the files will already be in the correct location. Check systemd's `ExecStart` and the loaded config path before touching a working installation.
+If your systemd service uses a different code checkout, copy only the six `.py` files to the active `[Bot] local_dir_path`/`commands/` directory; consult `systemctl cat meshcore-bot` to determine the actual working directory and config path.
 
-The [sanitized configuration example](examples/mesh-diagnostics.ini) contains optional command settings, including a short fixed help menu. Merge the relevant options into the existing production config, ideally `/opt/meshcore-bot/local/config.ini`. Do not replace existing configuration with the example.
+Merge relevant `[..._Command]` sections from [the short example](examples/mesh-diagnostics.ini) into the existing local `config.ini` or `/opt/meshcore-bot/local/config.ini`. **Don't overwrite the live bot config with `config.ini.diagnostics`: it is a deliberately disabled/sanitized template.** It contains placeholder/blank identities, locations, broker connection settings, and a nonworking radio connection type.
 
-`!help heardme`, `!help linktrend` and `!help neighborlist` are handled by the upstream help dispatcher when the plugins load. Generic `!help` dynamically lists loaded commands, but might truncate the list to fit the packet payload. The optional `[Keywords] help` override in the example fixes this by substituting a small list; it also hides other commands from that menu, so maintain it manually.
+```bash
+# Syntax check (adjust venv path if necessary)
+/opt/meshcore-bot/venv/bin/python -m py_compile /opt/meshcore-bot/local/commands/{neighborlist,heardme,linktrend,mypaths,traffic,airtime}.py
+sudo systemctl restart meshcore-bot
+sudo journalctl -u meshcore-bot -n 300 --no-pager \
+  | grep -Ei 'Successfully loaded local plugin|failed to load local plugin|linktrend|mypaths|traffic|airtime'
+```
 
-## Source data / limits
+Try `!help`, `!help mypaths`, `!help traffic`, `!help airtime`, and each command as a DM. The upstream help dispatcher reads the plugins' `get_help_text()` automatically. Normal `!help` may truncate the long list; a **short fixed** `[Keywords] help` override is included in the examples, but it replaces the dynamic help menu and must be maintained manually.
 
-- `!neighborlist`: `neighbor_observations` plus known `complete_contact_tracking` names; requires stored zero-hop data, and administrator access. Run the existing `!neighbors` command as admin for a fresh snapshot.
-- `!heardme`: `message_stats` and optionally `path_stats`; requires `[Stats_Command] collect_stats = true` and `track_all_messages = true`. History uses the sender label stored by upstream StatsCommand rather than a cryptographically unique key; counts can combine identities sharing a label. SNR of multi-hop DMs is the final-hop RF signal received by the bot.
-- `!linktrend`: `neighbor_observations` created by migration 22, enabled through `[PacketCapture] neighbors_enabled = true`. Observations are normally stored once per neighbour per completed discovery cycle, and are pruned according to `[Data_Retention] neighbor_observations_retention_days`. The command uses the radio public key in the newest observation, so data from other bot radios is excluded. A new installation may have only a single cycle, making trend calculations unavailable until later cycles.
-- All output obeys the 158-byte DM body budget and contains no private credentials. The public-key prefixes reported are derived from the bot's observed mesh neighbours.
+## Test
 
-## Privacy / repository hygiene
+```bash
+python -m unittest discover -s tests -p test_local_diagnostics_extra.py -v
+python -m unittest discover -s tests -p test_local_linktrend.py -v
+```
 
-This **public** fork tracks only selected safe plugin source files. The upstream `.gitignore` blocks `config.ini`, `local/config.ini`, and files under `local/commands` by default. This feature branch explicitly allows only `neighborlist.py`, `heardme.py`, and `linktrend.py` to be version-controlled. Keep site-specific addresses, email recipients, access tokens, passwords and actual administrator public keys out of the repository (even full public keys may be identifying). Use local ignored config files for deployment.
+Tests are isolated, in-memory/temporary SQLite tests using stubs for the base command; they do not communicate with a radio. Passing tests **do not** establish live systemd integration.
 
-No changes to the original upstream bot or your production radio settings are required.
+## Security and scope
+
+- Main production `config.ini`, local `config.ini`, databases, private keys and credentials remain gitignored.
+- The root `config.ini.diagnostics` is intentionally a safe public template, with identifying configuration removed; it is **not** operational out of the box.
+- Public branch code is unauthenticated for non-admin DM commands but uses normal upstream user and RF rate limiters and single-message responses.
+- No GitHub CI secret, MQTT auth token, private network address or real GPS location is needed to use these commands.
