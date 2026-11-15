@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **This is the [uturnski/meshcore-bot](https://github.com/uturnski/meshcore-bot) fork of [agessaman/meshcore-bot](https://github.com/agessaman/meshcore-bot).**
 >
-> **What makes this fork different?** Its main focus is **additional local command plugins and a route-aware ping alternative** for MeshCore RF and network diagnostics: neighbour discovery history, SNR trends, observed routes, traffic, and airtime estimates. The existing upstream bot and its features remain the foundation; seven added commands live in `local/commands/`. The built-in `!ping` is overridden using the upstream-supported `modules/commands/alternatives/` system, without modifying its core source file.
+> **What makes this fork different?** Its main focus is **additional local command plugins and a route-aware ping alternative** for MeshCore RF and network diagnostics: neighbour discovery history, SNR trends, observed routes, traffic, and airtime estimates. The existing upstream bot and its features remain the foundation; eight added commands live in `local/commands/`. The built-in `!ping` is overridden using the upstream-supported `modules/commands/alternatives/` system, without modifying its core source file.
 
 ## What's new in this fork
 
@@ -17,6 +17,7 @@
 | `!airtime BYTES [options]` | Estimated LoRa PHY transmit airtime for a packet | DM |
 | `!ping` / `!pingplain` | Incoming route hop count, SNR and repeater names (`pingplain` preserves legacy reply) | DM; channel summary |
 | `!bots` / `!botsN` | Passive directory: `+` replies to 2+ command types, `*` replies to one, `?` name-only; `!botsN` shows observed commands and local stats | DM; configured channels |
+| `!rneighbors` | Admin-only, explicitly allowlisted remote repeater neighbors: saved pages or one manual on-air refresh | Admin DM |
 
 **Key distinction:** These commands read previously collected local data or calculate an estimate. They do **not** start new neighbour discovery or generate test RF traffic. The built-in `!neighbors` command is separate and **does** initiate discovery. The ping alternative requires `[Plugin_Overrides] ping = ping_diagnostics` in your active configuration. Observations are receiver-local; they are not complete network-wide measurements.
 
