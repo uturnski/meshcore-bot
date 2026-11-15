@@ -2765,3 +2765,14 @@ enabled = true
 channels = #test
 reply_window_seconds = 45
 evidence_retention_days = 30
+
+[Rneighbors_Command]
+# Admin DM ONLY: explicitly selected remote repeaters. Disabled by default.
+# Add full 64-character public keys only to your PRIVATE active config.
+# The public repository intentionally contains no personal repeater keys.
+enabled = false
+# Syntax alias=FULL_PUBLIC_KEY, alias2=FULL_PUBLIC_KEY
+repeaters =
+# !rneighbors ALIAS reads saved data. Only refresh sends a remote request.
+# Each refresh fetches just one bounded remote neighbour table page.
+request_count = 12
