@@ -175,7 +175,7 @@ class RneighborsCommand(BaseCommand):
                     except (ValueError, TypeError):
                         signal = None
                     records[str(offset + i)] = {
-                        "prefix": prefix, "secs": secs, "snr": signal
+                        "prefix": prefix, "secs": secs, "snr": signal, "at": stamp
                     }
                 conn.execute(
                     """INSERT INTO rneighbors_cache
@@ -239,7 +239,7 @@ class RneighborsCommand(BaseCommand):
         try:
             result = await asyncio.wait_for(
                 getter(key, count=count, offset=offset,
-                       order_by=0, pubkey_prefix_length=6, timeout=12),
+                       order_by=0, pubkey_prefix_length=4, timeout=12),
                 timeout=18,
             )
         except asyncio.TimeoutError:
@@ -335,7 +335,7 @@ class RneighborsCommand(BaseCommand):
             prefix = record["prefix"]
             signal = record.get("snr")
             snr = f"{signal:+g}" if isinstance(signal, (int, float)) else "?"
-            heard = _age(stamp_age + max(0, int(record.get("secs", 0))))
+            heard = _age(max(0, int(time.time()) - int(record.get("at", snapshot["stamp"]))) + max(0, int(record.get("secs", 0))))
             lines.append(
                 f"{index + 1}. {_short(self._name(prefix), 11)} "
                 f"{prefix[:8]} S{snr} {heard}"
