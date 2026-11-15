@@ -98,7 +98,7 @@ class TestRneighbors(BaseLocalTest):
         self.assertEqual(self.calls[0][1]["pubkey_prefix_length"], 4)
         result = self.ask("!rneighbors rep1")[1]
         self.assertIn("12/14", result)
-        self.assertIn("Example Neighbor", result)
+        self.assertIn("Example Neigh", result)  # name is byte-limited on-air
         self.assertLessEqual(len(result.encode("utf-8")), 158)
         self.assertEqual(len(self.calls), 1)
 
