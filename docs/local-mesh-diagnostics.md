@@ -280,7 +280,7 @@ request_count = 12
 
 `request_count` is clamped to 1–24; the remote query uses
 `meshcore.commands.req_neighbours_sync()` with the selected exact 64-hex key,
-6-byte neighbour prefixes, a 12-second library timeout, and an 18-second
+4-byte neighbour prefixes, a 12-second library timeout, and an 18-second
 outer timeout. A timeout, unsupported firmware, or repeater access restriction
 returns an error and leaves cached results untouched. The query uses **binary
 neighbour requests**, not remote text CLI scraping. It does **not** implicitly
