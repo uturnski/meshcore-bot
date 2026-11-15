@@ -249,3 +249,66 @@ Run isolated tests with:
 ```sh
 python -m unittest tests.test_local_bots -v
 ```
+
+## `!rneighbors`: manually selected remote repeater neighbours
+
+This command **only targets repeaters you explicitly add** to the private
+`[Rneighbors_Command] repeaters` allowlist. Nothing is auto-discovered, polled,
+or queried in the background. Requests are restricted to authenticated
+**administrator DMs**; the command requires the caller's full public key to be
+in `[Admin_ACL] admin_pubkeys`.
+
+Use the following in your **private** active `config.ini` or `local/config.ini`
+(merge into existing sections; do not commit your actual public keys or secrets):
+
+```ini
+[Rneighbors_Command]
+enabled = true
+repeaters = rep1=YOUR_64_CHARACTER_REPEATER_PUBLIC_KEY
+request_count = 12
+```
+
+### Commands
+
+| Command | RF traffic | Behavior |
+| --- | --- | --- |
+| `!rneighbors` | No remote query | Show selected aliases and their public-key prefixes |
+| `!rneighbors rep1` | No remote query | Display first page of cached remote neighbours |
+| `!rneighbors rep1 2` | No remote query | Display cached results page 2 |
+| `!rneighbors refresh rep1` | **Yes, one** request | Fetch first 12 entries for selected `rep1` |
+| `!rneighbors refresh rep1 2` | **Yes, one** request | Fetch next 12 entries (`offset=12`) and merge into cache |
+
+`request_count` is clamped to 1–24; the remote query uses
+`meshcore.commands.req_neighbours_sync()` with the selected exact 64-hex key,
+6-byte neighbour prefixes, a 12-second library timeout, and an 18-second
+outer timeout. A timeout, unsupported firmware, or repeater access restriction
+returns an error and leaves cached results untouched. The query uses **binary
+neighbour requests**, not remote text CLI scraping. It does **not** implicitly
+perform a guest/admin login; firmware support and permissions control whether
+the remote node replies.
+
+Each response contains the repeater's neighbour prefixes, SNR and relative
+last-heard ages. Entries display optional names from
+`complete_contact_tracking` **only when the prefix identifies exactly one
+stored public key**; unknown/ambiguous prefixes show `-`. Reply lengths are
+bounded to 158 UTF-8 bytes with three entries per cached page.
+
+Results are in the bot's local SQLite database (`rneighbors_cache`) rather than
+a network-wide map. Partial results are clearly labelled as `saved/total`.
+The cached age is measured since retrieval; last-heard values were measured
+by the *remote repeater*, not by your bot. Observations are directional and
+may be stale. Each page fetch spends actual LoRa airtime, so **only request
+more pages when you need them**.
+
+The plugin is in `local/commands/rneighbors.py`. It does not replace the
+existing `!neighborlist` command, which shows **this bot's own** saved
+zero-hop neighbour discovery.
+
+Before use, verify your installed MeshCore Python library supports
+`req_neighbours_sync`. It exists in the upstream
+[meshcore_py binary command client](https://github.com/meshcore-dev/meshcore_py/blob/main/src/meshcore/commands/binary.py).
+Copy the plugin to your active `local/commands/` directory, configure the
+allowlist privately, restart your Debian bot and send `!rneighbors` by admin DM.
+It is disabled by default in published example settings.
+
+Isolated tests: `python -m unittest tests.test_local_rneighbors -v`.
