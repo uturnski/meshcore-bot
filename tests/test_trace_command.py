@@ -573,3 +573,16 @@ class TestTracePathEncodingRegression:
         with patch("modules.commands.trace_command.run_trace") as runner:
             await cmd.execute(mock_message(content="tracer a53e96", path="01,02"))
         runner.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_three_byte_message_route_is_not_sent_as_one_byte_trace():
+    bot = _make_bot()
+    cmd = TraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    with patch("modules.commands.trace_command.run_trace") as runner:
+        await cmd.execute(mock_message(
+            content="tracer", path="a53e96,d13584 (2 hops via DIRECT)"
+        ))
+    runner.assert_not_called()
+    assert "3-byte recorded paths" in cmd.send_response.call_args.args[1]
