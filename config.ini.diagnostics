@@ -1652,6 +1652,8 @@ per_user_cooldown_seconds = 900
 global_cooldown_seconds = 60
 maximum_hops = 5
 max_route_age_hours = 24
+# Historical graph connections, including a direct DM user's known first repeater
+graph_edge_age_hours = 72
 
 [Heardme_Command]
 # Custom local command: !heardme / !seenme (DM only)
