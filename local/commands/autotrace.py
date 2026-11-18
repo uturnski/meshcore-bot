@@ -5,7 +5,7 @@ companion. All observed routes flow sender -> repeaters -> this bot; joining
 two routes at a shared repeater implies reverse-direction links and MUST be
 reported as an unverified candidate, not proof of bidirectional RF connectivity.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import re
 import sqlite3
@@ -171,7 +171,8 @@ class AutotraceCommand(BaseCommand):
 
     def _observed(self, conn, public_key):
         """Advertisement paths are bound to their full originating public key."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(
+        # observed_paths.last_seen is written with naive local datetime.now().
+        cutoff = (datetime.now() - timedelta(
             hours=self.route_age_hours
         )).strftime("%Y-%m-%d %H:%M:%S")
         rows = conn.execute(
