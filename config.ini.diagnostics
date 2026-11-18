@@ -1644,8 +1644,9 @@ enabled = true
 enabled = true
 # channels =
 [Autotrace_Command]
-# DM-only historical reciprocal traces; read-only "paths" does not spend trace RF.
-# Disabled by default until tested on the mesh.
+# DM-only user-originated route recommendations. No bot-originated trace packets.
+# Users execute suggested routes with their own companion; replies use normal DM RF.
+# Disabled until tested. Special cooldowns limit recommendation replies.
 enabled = false
 per_user_cooldown_seconds = 900
 global_cooldown_seconds = 60
