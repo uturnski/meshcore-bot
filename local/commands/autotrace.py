@@ -49,8 +49,8 @@ class AutotraceCommand(BaseCommand):
     keywords = ["autotrace"]
     description = "Trace a recently observed DM repeater path (DM only)"
     short_description = "Historical reciprocal trace with airtime cooldowns"
-    usage = "autotrace [paths|1|2|3]"
-    examples = ["autotrace paths", "autotrace", "autotrace 2"]
+    usage = "autotrace [paths|1|2|3|NODE [paths|1|2|3]]"
+    examples = ["autotrace paths", "autotrace", "autotrace 2", "autotrace Dee", "autotrace a1b2c3"]
     category = "meshcore_info"
     requires_dm = True
     # The standard cooldown would block the read-only 'paths' subcommand.
@@ -94,8 +94,8 @@ class AutotraceCommand(BaseCommand):
         )
 
     def get_help_text(self):
-        return ("DM: autotrace [paths|1|2|3]. Trace recent saved DM route; "
-                "paths uses DB only. One RF attempt; cooldown applies.")
+        return ("DM: autotrace [paths|1|2|3|NODE [paths|1|2|3]]. "
+                "Other-node queries require admin. One RF attempt, cooldown.")
 
     def _identity(self, message):
         # A contact label is NOT a secure per-user rate-limit identity.
@@ -152,6 +152,114 @@ class AutotraceCommand(BaseCommand):
                 break
         return distinct
 
+    def _resolve_target(self, query):
+        """Lookup exactly one heard contact by name or 3-byte public key prefix.
+
+        Never use fuzzy identity mapping when multiple full public keys match.
+        """
+        term = str(query or "").strip()
+        if not term:
+            return None, "AutoTrace: target name/prefix required"
+        with self.bot.db_manager.connection() as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='complete_contact_tracking'"
+            ).fetchone() is None:
+                return None, "AutoTrace: no contact database"
+            rows = conn.execute(
+                "SELECT name, public_key, role FROM complete_contact_tracking "
+                "WHERE public_key IS NOT NULL"
+            ).fetchall()
+        contacts = [
+            (str(name or ""), str(key).lower().strip(), str(role or "").lower())
+            for name, key, role in rows if PUBKEY.fullmatch(str(key or "").strip())
+        ]
+        # Six hex digits represent 3 bytes of *identity*, not trace hash width.
+        if re.fullmatch(r"[0-9a-fA-F]{6}", term):
+            matched = [row for row in contacts if row[1].startswith(term.lower())]
+        else:
+            matched = [row for row in contacts if row[0].casefold() == term.casefold()]
+            if not matched:
+                matched = [row for row in contacts if term.casefold() in row[0].casefold()]
+        distinct = {row[1]: row for row in matched}
+        if not distinct:
+            return None, "AutoTrace: target not found in heard contacts"
+        if len(distinct) != 1:
+            return None, "AutoTrace: ambiguous target; use 3-byte hex"
+        return next(iter(distinct.values())), None
+
+    def _target_routes(self, target):
+        """Derive routes from actual recorded DM paths, never from position alone.
+
+        Repeater: find a matching repeater hop and truncate the path at it,
+        so the bot can trace back to *that* repeater. Reject hash collisions.
+        Companion: use a received DM route under the contact's saved label.
+        """
+        name, key, role = target
+        is_repeater = role in ("repeater", "roomserver")
+        with self.bot.db_manager.connection() as conn:
+            cutoff = (datetime.now(timezone.utc) - timedelta(
+                hours=self.route_age_hours
+            )).strftime("%Y-%m-%d %H:%M:%S")
+            until = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if is_repeater:
+                rows = conn.execute(
+                    """SELECT path, created_at FROM message_stats
+                       WHERE datetime(created_at) BETWEEN datetime(?) AND datetime(?)
+                       ORDER BY datetime(created_at) DESC, id DESC LIMIT 2000""",
+                    (cutoff, until),
+                ).fetchall()
+                others = [str(row[0] or "").lower() for row in conn.execute(
+                    "SELECT public_key FROM complete_contact_tracking "
+                    "WHERE role IN ('repeater', 'roomserver')"
+                ).fetchall()]
+            else:
+                # Sender label in StatsCommand is not cryptographically bound
+                # to key. The name must uniquely identify the heard contact.
+                other_same_name = conn.execute(
+                    "SELECT count(DISTINCT lower(public_key)) FROM complete_contact_tracking "
+                    "WHERE lower(name)=lower(?)", (name,)
+                ).fetchone()[0]
+                if other_same_name != 1:
+                    return []
+                anonymized = self.bot.config.getboolean(
+                    "Stats_Command", "anonymize_users", fallback=False
+                )
+                label = ("user_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+                         if anonymized else name)
+                rows = conn.execute(
+                    """SELECT path, created_at FROM message_stats
+                       WHERE is_dm=1 AND sender_id=?
+                         AND datetime(created_at) BETWEEN datetime(?) AND datetime(?)
+                       ORDER BY datetime(created_at) DESC, id DESC LIMIT 500""",
+                    (label, cutoff, until),
+                ).fetchall()
+                others = []
+        routes, seen = [], set()
+        for raw, created in rows:
+            full_path = parse_route(raw, max_hops=self.max_hops)
+            if full_path is None:
+                continue
+            if is_repeater:
+                width = len(full_path[0])
+                short = key[:width]
+                # A 1-/2-byte route hash is not enough to disambiguate
+                # unless no other heard repeater shares that prefix.
+                if sum(1 for other in set(others) if other.startswith(short)) != 1:
+                    continue
+                indices = [i for i, node in enumerate(full_path) if node == short]
+                if len(indices) != 1:
+                    continue
+                path = full_path[indices[0]:]
+            else:
+                path = full_path
+            if path in seen:
+                continue
+            seen.add(path)
+            routes.append((path, str(created)))
+            if len(routes) >= 3:
+                break
+        return routes
+
     async def _reply(self, message, lines):
         limit = min(158, self.get_max_message_length(message))
         body = ""
@@ -177,15 +285,37 @@ class AutotraceCommand(BaseCommand):
         if not self.enabled or not message.is_dm:
             return True
         _trigger, args = self.split_trigger_and_args(message.content or "")
-        args = args.strip().lower()
-        if args not in ("", "paths", "1", "2", "3"):
+        args = args.strip()
+        tokens = args.split()
+        target_query = None
+        action = ""
+        if len(tokens) == 1:
+            if tokens[0].lower() in ("paths", "1", "2", "3"):
+                action = tokens[0].lower()
+            else:
+                target_query = tokens[0]
+        elif len(tokens) >= 2:
+            if tokens[-1].lower() in ("paths", "1", "2", "3"):
+                action = tokens[-1].lower()
+                target_query = " ".join(tokens[:-1])
+            else:
+                target_query = args
+        if target_query and (len(target_query) > 70 or not target_query.strip()):
             return await self._reply(message, [self.get_help_text()])
+        if target_query and not self._check_admin_access(message):
+            return await self._reply(message, ["AutoTrace: target lookup is admin-only"])
         try:
-            routes = self._routes(message)
+            if target_query:
+                target, error = self._resolve_target(target_query)
+                if error:
+                    return await self._reply(message, [error])
+                routes = self._target_routes(target)
+            else:
+                routes = self._routes(message)
         except (sqlite3.Error, OSError, AttributeError) as exc:
             self.logger.warning("autotrace history lookup failed: %s", exc)
             return await self._reply(message, ["AutoTrace: history DB unavailable"])
-        if args == "paths":
+        if action == "paths":
             if not routes:
                 return await self._reply(message, ["AutoTrace: no valid recent DM routes"])
             lines = [f"AutoTrace: {len(routes)} recent route(s)"]
@@ -195,7 +325,7 @@ class AutotraceCommand(BaseCommand):
             return await self._reply(message, lines)
         if not routes:
             return await self._reply(message, [f"AutoTrace: no usable DM route in {self.route_age_hours}h"])
-        index = int(args) - 1 if args else 0
+        index = int(action) - 1 if action else 0
         if index >= len(routes):
             return await self._reply(message, ["AutoTrace: route not available", "Try !autotrace paths"])
         key = self._identity(message)
