@@ -84,6 +84,7 @@ async def run_trace(
     path: Optional[list[str]] = None,
     flags: int = 0,
     timeout_seconds: Optional[float] = None,
+    max_attempts_override: Optional[int] = None,
 ) -> RunTraceResult:
     """
     Send a trace and wait for TRACE_DATA. Retries on failure per config (default 2 attempts, 1s delay).
@@ -96,6 +97,7 @@ async def run_trace(
         path: Optional list of 2-char hex node IDs (e.g. ["01", "7a", "55"]). None = flood.
         flags: 8-bit flags for send_trace (0 = one_byte default).
         timeout_seconds: Override; if None, uses base + (path hops * per_hop) from config.
+        max_attempts_override: Optional per-call attempt ceiling. None keeps Trace_Command settings.
 
     Returns:
         RunTraceResult with success, tag, path_nodes (hash/snr), path_len, flags, error_message.
@@ -115,6 +117,8 @@ async def run_trace(
         timeout_seconds = _get_timeout_seconds(bot, path)
 
     max_attempts = max(1, bot.config.getint("Trace_Command", "trace_retry_count", fallback=2))
+    if max_attempts_override is not None:
+        max_attempts = max(1, min(max_attempts, int(max_attempts_override)))
     retry_delay = max(0.0, bot.config.getfloat("Trace_Command", "trace_retry_delay_seconds", fallback=1.0))
 
     path_str_debug = path_string if path_string else "(flood)"
