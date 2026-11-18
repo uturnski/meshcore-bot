@@ -66,7 +66,7 @@ def wait_label(seconds):
 class AutotraceCommand(BaseCommand):
     name = "autotrace"
     keywords = ["autotrace"]
-    description = "Suggest user-to-target trace routes from observed mesh paths"
+    description = "Suggest user-to-target trace routes using observed advertisement paths"
     short_description = "User-originated route suggestions; no bot trace probes"
     usage = "autotrace [paths|NODE [paths|1|2|3]]"
     examples = ["autotrace Dee", "autotrace a1b2c3", "autotrace Dee paths"]
@@ -152,92 +152,152 @@ class AutotraceCommand(BaseCommand):
             return None, "AutoTrace: ambiguous; use 3-byte ID"
         return next(iter(identities.values())), None
 
-    def _history(self, conn, label=None, any_sender=False, limit=1000):
+    @staticmethod
+    def _decode_observed(path_hex, bytes_per_hop):
+        """Decode original on-air hash width; do not split 3-byte hops as 1-byte."""
+        try:
+            width = int(bytes_per_hop)
+        except (ValueError, TypeError):
+            return None
+        raw = str(path_hex or "").strip().lower()
+        chars = 2 * width
+        if width not in (1, 2, 3) or not raw or len(raw) % chars:
+            return None
+        if not re.fullmatch(r"[a-f0-9]+", raw):
+            return None
+        nodes = tuple(raw[i:i + chars] for i in range(0, len(raw), chars))
+        # At most 16 observed hops are decoded; only a final candidate is capped
+        return nodes if 0 < len(nodes) <= 16 else None
+
+    def _observed(self, conn, public_key):
+        """Advertisement paths are bound to their full originating public key."""
         cutoff = (datetime.now(timezone.utc) - timedelta(
             hours=self.route_age_hours
         )).strftime("%Y-%m-%d %H:%M:%S")
-        until = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        where = "" if any_sender else "AND is_dm=1 AND sender_id=?"
-        params = (cutoff, until) if any_sender else (label, cutoff, until)
         rows = conn.execute(
-            "SELECT path,created_at FROM message_stats WHERE 1=1 " + where +
-            " AND datetime(created_at) BETWEEN datetime(?) AND datetime(?)"
-            " ORDER BY datetime(created_at) DESC,id DESC LIMIT " + str(limit),
-            params,
+            """SELECT path_hex, bytes_per_hop, observation_count, last_seen
+               FROM observed_paths
+               WHERE packet_type='advert' AND lower(public_key)=?
+                 AND datetime(last_seen)>=datetime(?)
+               ORDER BY last_seen DESC, observation_count DESC LIMIT 250""",
+            (public_key.lower(), cutoff),
         ).fetchall()
-        results, seen = [], set()
-        for raw, stamp in rows:
-            route = parse_route(raw, max_hops=self.max_hops)
-            if route and route not in seen:
-                results.append((route, str(stamp)))
-                seen.add(route)
-        return results
+        result, seen = [], set()
+        for raw, width, count, stamp in rows:
+            nodes = self._decode_observed(raw, width)
+            if nodes and nodes not in seen:
+                result.append((nodes, stamp, int(count or 1)))
+                seen.add(nodes)
+        return result
 
-    def _target_histories(self, conn, target, contacts):
-        name, full_key, role = target
-        if role not in ("repeater", "roomserver"):
-            # The upstream stats table ties paths to a *name*, not a pubkey.
-            # Reject duplicate labels rather than claim target verification.
-            if len({c[1] for c in contacts
-                    if c[0].casefold() == name.casefold()}) != 1:
-                return []
-            return self._history(conn, self._label(name))
-        known_reps = {c[1] for c in contacts if c[2] in ("repeater", "roomserver")}
-        paths = self._history(conn, any_sender=True, limit=2000)
-        results = []
-        for route, stamp in paths:
-            target_hash = full_key[:len(route[0])]
-            # A 3-byte identity cannot disambiguate a collided on-air
-            # 1-/2-byte path hash. Require exactly one known repeater match.
-            if sum(k.startswith(target_hash) for k in known_reps) != 1:
+    @staticmethod
+    def _repeater_keys(contacts):
+        return {c[1] for c in contacts if c[2] in ("repeater", "roomserver")}
+
+    @staticmethod
+    def _keyed_nodes(nodes, repeater_keys):
+        """Resolve EVERY on-air hash to exactly one known repeater full key.
+
+        Mixed original path widths can then be joined without incorrectly
+        equating two different repeaters sharing a short hash.
+        """
+        result = []
+        for hop in nodes:
+            matches = [key for key in repeater_keys if key.startswith(hop)]
+            if len(matches) != 1:
+                return None
+            result.append(matches[0])
+        return tuple(result)
+
+    def _manual_route(self, source, target, all_keys, is_repeater):
+        """Join source->bot and target->bot paths; output a user-originated route.
+
+        Target companion is not a trace hop: final node is its first observed
+        repeater. For repeater targets, append that repeater itself.
+        """
+        # Paths share a common suffix (toward the bot), not an arbitrary
+        # co-location claim or a connection inferred from geography.
+        if not source or not target:
+            return None
+        shared = 0
+        for a, b in zip(reversed(source), reversed(target)):
+            if a != b:
+                break
+            shared += 1
+        if shared < 1:
+            return None
+        joined = source[:len(source) - shared + 1] + tuple(
+            reversed(target[:len(target) - shared])
+        )
+        # For a repeater's own advert the repeater is the origin, rather
+        # than a hop listed in path_hex.
+        if is_repeater:
+            joined += (is_repeater,)
+        if not joined or len(joined) > self.max_hops or len(set(joined)) != len(joined):
+            return None
+        # The local trace engine currently only supports 1-/2-byte path mode.
+        # Encode with 2 bytes if needed; refuse ambiguous or unavailable hashes.
+        for width in (1, 2):
+            count = width * 2
+            if len({node[:count] for node in joined}) != len(joined):
                 continue
-            positions = [i for i, hop in enumerate(route) if hop == target_hash]
-            if len(positions) == 1:
-                results.append((route[positions[0]:], stamp))
-        return results
+            if any(sum(k.startswith(node[:count]) for k in all_keys) != 1 for node in joined):
+                continue
+            return tuple(node[:count] for node in joined)
+        return None
 
     def _proposals(self, message, target=None):
         with self.bot.db_manager.connection() as conn:
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()}
-            if not {"message_stats", "complete_contact_tracking"} <= tables:
-                return [], "AutoTrace: contact/history DB unavailable"
+            if not {"observed_paths", "complete_contact_tracking"} <= tables:
+                return [], "AutoTrace: observed_paths DB unavailable"
             contacts = self._contacts(conn)
-            own_label = str(message.sender_id or "").strip()
             source_key = self._identity(message)
-            # Protect against same-name collisions in old DM history. Any
-            # sender may still request a recommendation for their own current
-            # observed path when history is ambiguous.
-            historical_ok = bool(source_key and
-                {c[1] for c in contacts if c[0].casefold() == own_label.casefold()}
-                == {source_key})
-            sources = []
-            current = parse_route(getattr(message, "path", None), self.max_hops)
-            if current:
-                sources.append((current, "current"))
-            if historical_ok:
-                sources.extend(self._history(conn, self._label(own_label))[:20])
+            if not source_key:
+                return [], "AutoTrace: sender public key required"
+            repeater_keys = self._repeater_keys(contacts)
+            if not repeater_keys:
+                return [], "AutoTrace: no known repeater identities"
+            # Only origin-linked ADVERT paths; message_stats display names do
+            # not provide a cryptographic source-to-public-key association.
+            sources = self._observed(conn, source_key)
+            if not sources:
+                return [], "AutoTrace: no source advert route"
             if target is None:
-                return [(nodes, "observed to bot") for nodes, _ in sources[:3]], None
+                # 'autotrace paths' without a target shows raw inbound paths,
+                # never claims these are a user-to-other-node recommendation.
+                return [(hops, "inbound to bot") for hops, _, _ in sources[:3]], None
             tgt, error = self._resolve_target(target, contacts)
             if error:
                 return [], error
-            target_histories = self._target_histories(conn, tgt, contacts)
-            if not target_histories:
-                return [], "AutoTrace: no observed target route"
-            proposals = []
-            seen = set()
-            for own, _ in sources[:20]:
-                for toward, _ in target_histories[:100]:
-                    linked = candidate_route(own, toward, self.max_hops)
-                    if linked and linked not in seen:
-                        proposals.append((linked, tgt[0]))
-                        seen.add(linked)
+            target_key = tgt[1]
+            if target_key == source_key:
+                return [], "AutoTrace: target is your own node"
+            target_routes = self._observed(conn, target_key)
+            if not target_routes:
+                return [], "AutoTrace: no target advert route"
+            proposals, seen = [], set()
+            target_rep = target_key if tgt[2] in ("repeater", "roomserver") else None
+            # Stable recency preference: already ordered by last_seen, then count.
+            for own, _, _ in sources[:60]:
+                own_keys = self._keyed_nodes(own, repeater_keys)
+                if own_keys is None:
+                    continue
+                for toward, _, _ in target_routes[:60]:
+                    tgt_keys = self._keyed_nodes(toward, repeater_keys)
+                    if tgt_keys is None:
+                        continue
+                    path = self._manual_route(
+                        own_keys, tgt_keys, repeater_keys, target_rep
+                    )
+                    if path and path not in seen:
+                        seen.add(path)
+                        proposals.append((path, tgt[0]))
                         if len(proposals) >= 3:
                             return proposals, None
-            return proposals, ("AutoTrace: no shared route evidence"
-                               if not proposals else None)
+            return [], "AutoTrace: no safely joinable observed routes"
 
     async def _reply(self, message, lines):
         limit = min(158, self.get_max_message_length(message))
