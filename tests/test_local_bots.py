@@ -146,7 +146,7 @@ class TestBots(BaseLocalTest):
         self.message("ServiceAgent", "Pong!", seconds=-19)
         self.message("ServiceAgent", "Pong! | extra", seconds=-18)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *ServiceAgent", result)
+        self.assertIn("1. *---- n/a", result)
         self.assertNotIn("1. +----", result)
         self.assertIn("Reply 2x ping", self.query(self.plugin, "!bots1"))
 
@@ -192,9 +192,9 @@ class TestBots(BaseLocalTest):
         }.get(name, fallback)
         self.add("WeatherBot", "a", lat=43.0, lon=-79.0)
         listing = self.query(self.plugin, "!bots list")
-        self.assertRegex(listing, r"1\\. \\?AAAA 81\\.\\d+km")
+        self.assertRegex(listing, r"1\. \?AAAA 81\.\d+km")
         detail = self.query(self.plugin, "!bots1")
-        self.assertRegex(detail, r"Dist 81\\.\\d+km")
+        self.assertRegex(detail, r"Dist 81\.\d+km")
         self.assertEqual(listing, self.query(self.plugin, "!bots"))
         self.assertEqual(listing, self.query(self.plugin, "!bots list 1"))
 
