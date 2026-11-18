@@ -84,40 +84,47 @@ RF hop**, not separately for each repeater. It never contacts individual
 repeaters or sends extra test packets. The built-in ping template from
 `[Keywords] ping` remains available through `!pingplain`.
 
-## AutoTrace: user-originated route recommendations (experimental)
+## AutoTrace: user-originated recommendations from `observed_paths`
 
-**AutoTrace is now read-only with respect to trace probes.** The bot
-analyzes previously received message paths and suggests a repeater sequence
-**from the requesting companion toward the named target**. It **does not**
-invoke `send_trace` or initiate a trace from the bot's radio. Users must
-run `tracer <path>` from their *own* companion/client, if supported.
+**Primary source:** the bot's `observed_paths` table, **not**
+`message_stats`. `packet_type='advert'` records have `public_key`
+(the originating device), `path_hex`, `bytes_per_hop`,
+`observation_count`, and `last_seen`. The original hash width is
+preserved: **1, 2, or 3 bytes per hop**. A blank `path_hex` indicates no
+repeater hops and cannot establish an intermediate route.
 
-| DM command | Behavior |
+For `!autotrace Dee` or `!autotrace d13584`, AutoTrace:
+
+1. Resolves Dee to a single full public key in `complete_contact_tracking`.
+2. Loads recent advertisement paths originating from the requesting user's
+   full key and from Dee's full key.
+3. Resolves each repeater hash to an **unambiguous full repeater public key**,
+   including paths that use different on-air hash widths.
+4. Finds an actual **shared suffix** toward the bot, constructs the candidate
+   **from the requesting companion** through that common relay toward the
+   target's nearest observed relay, and checks the outgoing hop limit.
+5. Encodes the result using **1- or 2-byte repeater hashes** only when these
+   are uniquely identifiable. It does **not** pretend that decoding a 3-byte
+   observed route means the companion can transmit a 3-byte manual trace.
+6. Returns a manual path such as `tracer 11,22,aa` for execution **on the
+   user's own radio**. The bot **never calls** `run_trace` or `send_trace`.
+
+For a **repeater target**, its own public key can be the final repeater
+hop. For a **companion target**, the suggested trace ends at its first
+advertisement repeater, **not at the companion**. This does not validate the
+companion's reachability. Links learned from sender-to-bot advertisements may
+be asymmetric in the opposite direction. No automatic RF trace probing,
+geographic inference, or fabricated links.
+
+| DM command | Purpose |
 |---|---|
-| `!autotrace` / `!autotrace paths` | Your observed inbound repeater sequences to the bot (not a user-to-target trace) |
-| `!autotrace Dee` | Recommend a path from **you** toward Dee, using a shared observed repeater |
-| `!autotrace a1b2c3` | Resolve the uniquely matching heard contact by first 3 bytes of its full public key |
-| `!autotrace Dee paths` | List up to three candidate paths with no active probe |
-| `!autotrace Dee 2` | Show the second suggestion as a manual user-side `tracer` path |
+| `!autotrace` | Show the requester's observed advertisement paths toward bot |
+| `!autotrace Dee` | First candidate from requester toward Dee |
+| `!autotrace d13584` | Same lookup by 3-byte public-key prefix |
+| `!autotrace Dee paths` | Up to three candidate routes, without recommendation cooldown |
+| `!autotrace Dee 2` | Second candidate, if available |
 
-To construct a recommendation, the bot matches the requester's *current*
-received DM route (or recent stored DM route with a uniquely matching
-contact/public-key identity) with the target's recent received DM path.
-For a repeater target, the bot can also use paths where the target
-appeared as a verified, non-colliding repeater prefix. Paths are joined
-only at a **shared observed repeater suffix toward the bot**. It will not
-fabricate a connection or assume that two repeaters link merely because
-they are geographically close. If no shared route evidence exists,
-the command explains that no recommendation is available.
-
-The route is still an **inference**: the observations are directional,
-and radio links can be asymmetric. A reply from `tracer` tests repeaters
-along the candidate route, **not the final companion's receipt**. Stored
-message paths are indexed by display name, not cryptographically bound
-to a public key; names are checked for uniqueness where possible and
-full-key prefix collisions are rejected. Trace routes are limited to
-uniform one-/two-byte repeater hashes, at most five hops. The six-digit
-target ID is an identity lookup, **not** 3-byte trace encoding.
+Configured defaults remain:
 
 ```ini
 [Autotrace_Command]
@@ -128,18 +135,17 @@ maximum_hops = 5
 max_route_age_hours = 24
 ```
 
-These two cooldowns limit **new recommendation replies** (15 minutes
-per sender and 60 seconds between active recommendations), not any
-trace traffic—the bot sends no trace packets. The read-only `paths`
-lookup bypasses these special cooldowns but still sends a normal DM
-response subject to standard bot-wide transmit limits. Cooldowns are
-held in memory and reset on service restart. No target lookup requires
-administrator privileges in this version. The feature remains
-**disabled by default** until tested.
+The per-user and global cooldowns limit **recommendation replies**, not
+trace packets; only the user may initiate a trace. `paths` requests remain
+subject to standard DM response throttling. The bot reports no route when
+the user or target has no recent nonempty advertised path, there is no
+shared observed repeater, hash collisions remain unresolved, or the final
+candidate exceeds the outgoing-hop budget. `observed_paths.last_seen`
+is written using local naive `datetime.now()`, so AutoTrace's age filter
+uses the same clock convention.
 
-Tests: `python -m pytest tests/test_autotrace_local.py -q`.
-The tests use local SQLite data and a mock radio; run them before
-enabling the feature on a live node.
+Tests: `python -m pytest tests/test_autotrace_local.py -q`
+(mocked bot, temporary SQLite). **No live test has been completed.**
 
 ## Install on Debian
 
