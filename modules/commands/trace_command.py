@@ -235,6 +235,16 @@ class TraceCommand(BaseCommand):
             # Incoming path is sender → ... → bot; reverse so we have path from bot toward sender
             path_nodes = list(reversed(path_nodes))
 
+        # A received DM may have 3-byte repeater hashes. The TRACE flags
+        # cannot represent 3 bytes per hop, so never silently use 1-byte.
+        if len({len(node) for node in path_nodes}) != 1 or len(path_nodes[0]) not in (2, 4):
+            await self.send_response(
+                message,
+                "Trace needs uniform 1-/2-byte hop IDs. "
+                "3-byte recorded paths cannot be sent as trace hops.",
+            )
+            return True
+
         # Use reciprocal path for tracer (always) or when no path given (so round-trip completes)
         if is_tracer or path_arg is None:
             path_nodes = self._build_reciprocal_path(path_nodes)
