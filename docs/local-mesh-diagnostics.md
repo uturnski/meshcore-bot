@@ -95,6 +95,9 @@ trace protocol. The feature is **disabled by default**.
 | `!autotrace paths` | Up to 3 recent distinct received DM paths from SQLite; **no trace RF** |
 | `!autotrace` or `!autotrace 1` | Trace the newest valid historical path, one attempt |
 | `!autotrace 2` / `!autotrace 3` | Trace that ranked historical path if it exists |
+| `!autotrace Dee` | Admin DM: resolve exactly one heard contact name and trace a stored path |
+| `!autotrace a1b2c3` | Admin DM: resolve a **3-byte public-key prefix** to exactly one heard contact |
+| `!autotrace Dee paths` | Admin DM: list available historical routes to named contact, no trace RF |
 
 ```ini
 [Autotrace_Command]
@@ -114,6 +117,19 @@ global cooldown or concurrency limit. The shared trace runner now accepts
 a per-call `max_attempts_override=1`; ordinary `!trace` still uses its configured
 retry count. `!autotrace paths` bypasses these RF-specific cooldowns, but
 still uses normal bot DM response rate-limiting.
+
+**Target selection:** Names require an unambiguous full-name match (or an
+unambiguous partial-name match). Six hexadecimal digits are interpreted as the
+first **three bytes of the target's full public key**, not the trace route's
+hash width. Ambiguous matches fail closed; do not infer that three-byte identity
+hashes can be used directly in a one-byte MeshCore trace. Companion trace
+candidates must come from that contact label's observed DM route, which
+upstream stores without a verified public-key association. For repeaters the
+bot finds an observed repeater hash in a received packet route and traces the
+suffix of that route toward the repeater, rejecting collisions against all
+known repeater public keys. Seeing a node advertise, without usable route
+evidence, is not enough. Targeted lookups are **admin-only**; own-route
+lookup remains available to normal DM users.
 
 **Route safety:** the bot uses received `created_at` timestamps rather than
 sender-supplied clocks. Reject stale, malformed, mixed-width, >5-hop or
