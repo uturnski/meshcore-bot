@@ -84,6 +84,52 @@ RF hop**, not separately for each repeater. It never contacts individual
 repeaters or sends extra test packets. The built-in ping template from
 `[Keywords] ping` remains available through `!pingplain`.
 
+## AutoTrace: historical reciprocal routing (experimental)
+
+The local `!autotrace` command reuses upstream's `TraceCommand` reciprocal-path
+helper and the shared `run_trace` engine; it does **not** implement a second radio
+trace protocol. The feature is **disabled by default**.
+
+| DM command | Effect |
+|---|---|
+| `!autotrace paths` | Up to 3 recent distinct received DM paths from SQLite; **no trace RF** |
+| `!autotrace` or `!autotrace 1` | Trace the newest valid historical path, one attempt |
+| `!autotrace 2` / `!autotrace 3` | Trace that ranked historical path if it exists |
+
+```ini
+[Autotrace_Command]
+enabled = false
+per_user_cooldown_seconds = 900
+global_cooldown_seconds = 60
+maximum_hops = 5
+max_route_age_hours = 24
+```
+
+**Airtime safeguards:** active commands require an authenticated 64-hex sender
+public key and a DM; reserve the 15-minute per-user and 60-second global
+cooldowns *before* any network send, including failed sends/timeouts; allow
+one in-flight AutoTrace at a time; no fallback paths or automatic extra
+attempts. Admin ACL members can bypass only the per-user interval, not the
+global cooldown or concurrency limit. The shared trace runner now accepts
+a per-call `max_attempts_override=1`; ordinary `!trace` still uses its configured
+retry count. `!autotrace paths` bypasses these RF-specific cooldowns, but
+still uses normal bot DM response rate-limiting.
+
+**Route safety:** the bot uses received `created_at` timestamps rather than
+sender-supplied clocks. Reject stale, malformed, mixed-width, >5-hop or
+currently unsupported 3-byte trace paths. Historical DM records are
+indexed by contact *display name* in upstream `message_stats`, so the saved
+route **is not cryptographically bound to the requesting public key** and
+may be confused by duplicate/renamed labels. Access is restricted to
+the requesting contact label; no arbitrary history lookup is supported.
+Successful traces verify a repeater round-trip to the bot, **not delivery
+to the companion**. Routes are reversed from sender-to-bot and made
+reciprocal before passing to the shared runner. This feature does not
+globally lock the existing manually invoked `!trace` command.
+
+Testing: `python -m pytest tests/test_autotrace_local.py -q` (mock radio,
+SQLite fixture). Production RF still requires a controlled field test.
+
 ## Install on Debian
 
 On a source checkout at `/opt/meshcore-bot`, switch to the feature branch (confirm you have no uncommitted edits):
