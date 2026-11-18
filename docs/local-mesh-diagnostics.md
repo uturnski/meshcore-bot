@@ -96,8 +96,11 @@ repeater hops and cannot establish an intermediate route.
 For `!autotrace Dee` or `!autotrace d13584`, AutoTrace:
 
 1. Resolves Dee to a single full public key in `complete_contact_tracking`.
-2. Loads recent advertisement paths originating from the requesting user's
-   full key and from Dee's full key.
+2. Reads the **current inbound DM's** `routing_info.path_nodes` first;
+   if that is absent, tries `routing_info.path_hex` with its explicit
+   `bytes_per_hop`, then the decoded `message.path`. If no usable DM
+   route is available, falls back to advertisement paths indexed by the
+   requesting user's full key. Dee's paths still come from `observed_paths`.
 3. Resolves each repeater hash to an **unambiguous full repeater public key**,
    including paths that use different on-air hash widths.
 4. Finds an actual **shared suffix** toward the bot, constructs the candidate
@@ -138,11 +141,20 @@ max_route_age_hours = 24
 The per-user and global cooldowns limit **recommendation replies**, not
 trace packets; only the user may initiate a trace. `paths` requests remain
 subject to standard DM response throttling. The bot reports no route when
-the user or target has no recent nonempty advertised path, there is no
+the requester has neither a usable current DM path nor a historical advert,
+the target has no recent nonempty advertised path, or there is no
 shared observed repeater, hash collisions remain unresolved, or the final
 candidate exceeds the outgoing-hop budget. `observed_paths.last_seen`
 is written using local naive `datetime.now()`, so AutoTrace's age filter
 uses the same clock convention.
+
+A direct (zero-hop) DM is **not** a missing route: the bot replies
+`AutoTrace: direct to bot; no relay route` rather than inventing a
+forwardable repeater hop. A DM with a valid recorded repeater sequence
+works even when the requester never advertises and has no entry in
+`observed_paths` (the cause of the original `no source advert route`
+error). Original one-, two-, and three-byte path widths are preserved
+for identity resolution.
 
 Tests: `python -m pytest tests/test_autotrace_local.py -q`
 (mocked bot, temporary SQLite). **No live test has been completed.**
