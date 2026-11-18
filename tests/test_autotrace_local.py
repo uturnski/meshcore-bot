@@ -166,7 +166,73 @@ def test_cooldown_only_for_recommendation_not_paths(tmp_path):
     assert "11,22,aa" in send(cmd, "!autotrace Dee paths")
 
 
-def test_no_advert_by_requester_fails_instead_of_using_other_user(tmp_path):
+def test_no_advert_by_requester_fails_without_current_dm_route(tmp_path):
     bot = make_bot(tmp_path)
     advert(bot, DEE, "aa2233")
-    assert "no source advert route" in send(AutotraceCommand(bot), "!autotrace Dee")
+    assert "no incoming DM or source advert route" in send(AutotraceCommand(bot), "!autotrace Dee")
+
+
+def test_current_dm_path_works_with_no_requester_advert(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    cmd = AutotraceCommand(bot)
+    msg = user("!autotrace Dee")
+    msg.routing_info = {"path_nodes": ["11", "22", "33"],
+                        "bytes_per_hop": 1, "path_length": 3}
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+    bot.meshcore.commands.send_trace.assert_not_awaited()
+
+
+def test_current_dm_three_byte_nodes_joins_target_one_byte(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.routing_info = {
+        "path_nodes": ["11aabb", "22aabb", "33aabb"],
+        "bytes_per_hop": 3, "path_length": 3,
+    }
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+
+
+def test_current_dm_hex_fallback_with_explicit_width(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.routing_info = {
+        "path_hex": "11aabb22aabb33aabb",
+        "bytes_per_hop": 3, "path_length": 3,
+    }
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+
+
+def test_legacy_message_path_fallback(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.path = "11,22,33 (3 hops via ROUTE_TYPE_FLOOD)"
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+
+
+def test_direct_dm_is_not_reported_as_missing_or_used_as_repeater(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    advert(bot, USER, "112233")  # Old advert must not supersede a direct DM
+    msg = user("!autotrace Dee")
+    msg.routing_info = {"path_nodes": [], "path_length": 0}
+    msg.path = "Direct"
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "direct to bot; no relay route" in cmd.send_response.call_args.args[1]
+    bot.meshcore.commands.send_trace.assert_not_awaited()
