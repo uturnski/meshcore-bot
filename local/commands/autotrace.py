@@ -184,9 +184,6 @@ class AutotraceCommand(BaseCommand):
             hop_count = int(info["path_length"]) if info.get("path_length") is not None else None
         except (TypeError, ValueError):
             hop_count = None
-        if hop_count == 0:
-            return None, "direct"
-
         if isinstance(raw_nodes, (list, tuple)) and raw_nodes:
             nodes = tuple(str(node).strip().lower() for node in raw_nodes)
             if (len(nodes) <= 16 and len({len(x) for x in nodes}) == 1
@@ -203,7 +200,9 @@ class AutotraceCommand(BaseCommand):
                 return nodes, "routed"
 
         plain = str(getattr(message, "path", "") or "").strip()
-        if re.match(r"^(?:direct|0 hops?\b)", plain, re.IGNORECASE):
+        # The upstream handler displays missing path_len=255 as Direct (0 hops).
+        # Only a correlated RF record with explicit zero hops proves direct.
+        if hop_count == 0:
             return None, "direct"
         # Keep the whole observed sequence (maximum 16), not a truncated path.
         m = PATH.match(plain)
@@ -313,13 +312,13 @@ class AutotraceCommand(BaseCommand):
             # Only if it lacks a usable multi-hop route do we try advertised
             # paths bound to the requester's full public key.
             current, current_status = self._incoming_dm_route(message)
-            if current_status == "direct":
-                return [], "AutoTrace: direct to bot; no relay route"
             sources = [(current, None, 1)] if current is not None else []
             if not sources:
                 sources = self._observed(conn, source_key)
             if not sources:
-                return [], "AutoTrace: no incoming DM or source advert route"
+                if current_status == "direct":
+                    return [], "AutoTrace: RF says direct; no relay route"
+                return [], "AutoTrace: DM route unknown; no source advert"
             if target is None:
                 # 'autotrace paths' without a target shows raw inbound paths,
                 # never claims these are a user-to-other-node recommendation.
