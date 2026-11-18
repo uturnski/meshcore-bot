@@ -234,5 +234,41 @@ def test_direct_dm_is_not_reported_as_missing_or_used_as_repeater(tmp_path):
     cmd = AutotraceCommand(bot)
     cmd.send_response = AsyncMock(return_value=True)
     asyncio.run(cmd.execute(msg))
-    assert "direct to bot; no relay route" in cmd.send_response.call_args.args[1]
+    assert "RF says direct; no relay route" in cmd.send_response.call_args.args[1]
     bot.meshcore.commands.send_trace.assert_not_awaited()
+
+
+def test_unknown_direct_display_is_not_proof_of_direct_rf(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.path = "Direct (0 hops)"
+    msg.routing_info = None  # upstream path_len=255 can mean unknown
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "DM route unknown" in cmd.send_response.call_args.args[1]
+
+
+def test_actual_routing_nodes_override_incorrect_zero_length(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.routing_info = {"path_nodes": ["11", "22", "33"], "path_length": 0}
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+
+
+def test_missing_dm_metadata_can_fallback_to_adverts(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa2233")
+    msg = user("!autotrace Dee")
+    msg.routing_info = None
+    msg.path = "Direct (0 hops)"
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
