@@ -96,9 +96,9 @@ class TestParsePathArg:
         result = self.cmd._parse_path_arg("trace 01,7a,55")
         assert result == ["01", "7a", "55"]
 
-    def test_contiguous_hex_path(self):
+    def test_contiguous_hex_path_rejected_without_hop_boundaries(self):
         result = self.cmd._parse_path_arg("trace 017a55")
-        assert result == ["01", "7a", "55"]
+        assert result is None
 
     def test_invalid_hex_returns_none(self):
         result = self.cmd._parse_path_arg("trace 01,zz")
@@ -403,13 +403,25 @@ class TestMultibyteParsePathArg:
         result = self.cmd._parse_path_arg("trace feed,01")
         assert result is None
 
-    def test_three_byte_comma_separated(self):
+    def test_three_byte_comma_separated_unsupported_by_trace(self):
         result = self.cmd._parse_path_arg("trace feedca,6ddf01")
-        assert result == ["feedca", "6ddf01"]
+        assert result is None
 
-    def test_contiguous_hex_still_splits_by_two(self):
+    def test_contiguous_multihop_hex_is_rejected(self):
         result = self.cmd._parse_path_arg("trace feed6ddf")
-        assert result == ["fe", "ed", "6d", "df"]
+        assert result is None
+
+    def test_single_two_byte_hop_is_not_split(self):
+        assert self.cmd._parse_path_arg("tracer a53e") == ["a53e"]
+
+    def test_single_one_byte_hop(self):
+        assert self.cmd._parse_path_arg("tracer a5") == ["a5"]
+
+    def test_single_three_byte_hop_rejected(self):
+        assert self.cmd._parse_path_arg("tracer a53e96") is None
+
+    def test_empty_comma_segment_rejected(self):
+        assert self.cmd._parse_path_arg("tracer a53e,") is None
 
     def test_two_byte_bang_prefix(self):
         result = self.cmd._parse_path_arg("!trace feed,6ddf")
@@ -510,3 +522,54 @@ class TestTraceGraphUpdateGate:
              patch("modules.commands.trace_command.update_mesh_graph_from_trace_data") as update:
             asyncio.run(cmd.execute(mock_message(content=f"trace {'a' * width}", path=None)))
         assert update.called is updates
+
+
+class TestTracePathEncodingRegression:
+    """The live bug was tracer a53e -> a5,3e,a5 on the RF packet."""
+
+    @pytest.mark.asyncio
+    async def test_tracer_single_two_byte_hop_stays_single(self):
+        bot = _make_bot()
+        bot.connected = True
+        bot.meshcore.commands = MagicMock()
+        cmd = TraceCommand(bot)
+        cmd.send_response = AsyncMock(return_value=True)
+        with patch("modules.commands.trace_command.run_trace", AsyncMock(
+            return_value=RunTraceResult(success=False, tag=1, error_message="timeout")
+        )) as runner:
+            await cmd.execute(mock_message(content="tracer a53e"))
+        assert runner.await_args.kwargs["path"] == ["a53e"]
+        assert runner.await_args.kwargs["flags"] == 1
+
+    @pytest.mark.asyncio
+    async def test_tracer_two_two_byte_hops_uses_two_byte_flags(self):
+        bot = _make_bot()
+        bot.connected = True
+        bot.meshcore.commands = MagicMock()
+        cmd = TraceCommand(bot)
+        cmd.send_response = AsyncMock(return_value=True)
+        with patch("modules.commands.trace_command.run_trace", AsyncMock(
+            return_value=RunTraceResult(success=False, tag=1, error_message="timeout")
+        )) as runner:
+            await cmd.execute(mock_message(content="tracer a53e,d135"))
+        assert runner.await_args.kwargs["path"] == ["a53e", "d135", "a53e"]
+        assert runner.await_args.kwargs["flags"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unsupported_three_byte_trace_is_not_transmitted(self):
+        bot = _make_bot()
+        cmd = TraceCommand(bot)
+        cmd.send_response = AsyncMock(return_value=True)
+        with patch("modules.commands.trace_command.run_trace") as runner:
+            await cmd.execute(mock_message(content="tracer a53e96", path="Direct"))
+        runner.assert_not_called()
+        assert "3-byte" in cmd.send_response.call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_invalid_path_does_not_use_unrelated_message_path(self):
+        bot = _make_bot()
+        cmd = TraceCommand(bot)
+        cmd.send_response = AsyncMock(return_value=True)
+        with patch("modules.commands.trace_command.run_trace") as runner:
+            await cmd.execute(mock_message(content="tracer a53e96", path="01,02"))
+        runner.assert_not_called()
