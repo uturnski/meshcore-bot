@@ -3,7 +3,6 @@
 Only the selected trace transmits. "paths" reads received-DM history in SQLite.
 History is indexed by contact display name upstream, NOT authenticated pubkey.
 """
-import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import re
@@ -57,6 +56,18 @@ class AutotraceCommand(BaseCommand):
     # The standard cooldown would block the read-only 'paths' subcommand.
     # We enforce both user/global trace cooldowns explicitly before sending RF.
     cooldown_seconds = 0
+    enabled_attr = "enabled"
+    settings_schema = [
+        {"key": "enabled", "label": "Enable AutoTrace", "type": "bool", "default": False},
+        {"key": "per_user_cooldown_seconds", "label": "Per-user trace cooldown",
+         "type": "int", "min": 0, "default": 900},
+        {"key": "global_cooldown_seconds", "label": "Global trace cooldown",
+         "type": "int", "min": 0, "default": 60},
+        {"key": "maximum_hops", "label": "Maximum outbound hops",
+         "type": "int", "min": 1, "max": 5, "default": 5},
+        {"key": "max_route_age_hours", "label": "Historical route age",
+         "type": "int", "min": 1, "max": 168, "default": 24},
+    ]
 
     def __init__(self, bot):
         super().__init__(bot)
@@ -183,7 +194,7 @@ class AutotraceCommand(BaseCommand):
             lines.append("History by contact name; not verified.")
             return await self._reply(message, lines)
         if not routes:
-            return await self._reply(message, ["AutoTrace: no usable DM route in 24h"])
+            return await self._reply(message, [f"AutoTrace: no usable DM route in {self.route_age_hours}h"])
         index = int(args) - 1 if args else 0
         if index >= len(routes):
             return await self._reply(message, ["AutoTrace: route not available", "Try !autotrace paths"])
