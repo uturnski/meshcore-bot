@@ -1,4 +1,4 @@
-"""AutoTrace user-side recommendations: unit tests use SQLite and never a radio."""
+"""Tests for observed_paths-backed, user-originated AutoTrace proposals."""
 import asyncio
 import configparser
 from contextlib import contextmanager
@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 from local.commands.autotrace import AutotraceCommand, candidate_route, parse_route
 from tests.conftest import mock_message
 
-SOURCE = "a" * 64
-TARGET = "abcdef" + "1" * 58
-REP = "bbccdd" + "2" * 58
-OTHER = "ddffee" + "3" * 58
+USER = "a1a1a1" + "0" * 58
+DEE = "d13584" + "0" * 58
+RELAY_11 = "11aabb" + "0" * 58
+RELAY_22 = "22aabb" + "0" * 58
+RELAY_33 = "33aabb" + "0" * 58
+RELAY_AA = "aaaabb" + "0" * 58
 
 
 class DB:
@@ -29,153 +31,142 @@ class DB:
 def make_bot(tmp_path):
     bot = MagicMock()
     bot.logger = Mock()
-    bot.config = configparser.ConfigParser()
+    config = configparser.ConfigParser()
     for section in ("Bot", "Channels", "Keywords", "Autotrace_Command",
                     "Stats_Command", "Admin_ACL"):
-        bot.config.add_section(section)
-    bot.config.set("Bot", "bot_name", "TestBot")
-    bot.config.set("Channels", "monitor_channels", "general")
-    bot.config.set("Channels", "respond_to_dms", "true")
-    bot.config.set("Autotrace_Command", "enabled", "true")
-    bot.config.set("Autotrace_Command", "per_user_cooldown_seconds", "900")
-    bot.config.set("Autotrace_Command", "global_cooldown_seconds", "60")
-    bot.config.set("Stats_Command", "anonymize_users", "false")
-    bot.translator.translate = Mock(side_effect=lambda name, **kw: name)
+        config.add_section(section)
+    config.set("Bot", "bot_name", "TestBot")
+    config.set("Channels", "monitor_channels", "general")
+    config.set("Channels", "respond_to_dms", "true")
+    config.set("Autotrace_Command", "enabled", "true")
+    config.set("Autotrace_Command", "per_user_cooldown_seconds", "900")
+    config.set("Autotrace_Command", "global_cooldown_seconds", "60")
+    bot.config = config
+    bot.translator.translate = Mock(side_effect=lambda key, **kw: key)
     bot.command_manager.monitor_channels = ["general"]
-    bot.db_manager = DB(str(tmp_path / "test.db"))
+    bot.meshcore.commands.send_trace = AsyncMock()
+    bot.db_manager = DB(str(tmp_path / "db.sqlite"))
     with bot.db_manager.connection() as conn:
-        conn.execute("""CREATE TABLE message_stats(
-            id INTEGER PRIMARY KEY, sender_id TEXT, is_dm INTEGER,
-            path TEXT, created_at TEXT)""")
         conn.execute("""CREATE TABLE complete_contact_tracking(
             name TEXT, public_key TEXT, role TEXT)""")
+        conn.execute("""CREATE TABLE observed_paths(
+            id INTEGER PRIMARY KEY, public_key TEXT, packet_type TEXT,
+            path_hex TEXT, bytes_per_hop INTEGER,
+            observation_count INTEGER, last_seen TEXT)""")
+    for name, key, role in [
+        ("Alice", USER, "companion"), ("Dee", DEE, "companion"),
+        ("R11", RELAY_11, "repeater"), ("R22", RELAY_22, "repeater"),
+        ("R33", RELAY_33, "repeater"), ("RAA", RELAY_AA, "repeater")
+    ]:
+        contact(bot, name, key, role)
     return bot
 
 
-def contact(bot, name, pubkey, role="companion"):
+def contact(bot, name, key, role):
     with bot.db_manager.connection() as conn:
-        conn.execute("INSERT INTO complete_contact_tracking VALUES (?,?,?)",
-                     (name, pubkey, role))
+        conn.execute("INSERT INTO complete_contact_tracking VALUES(?,?,?)",
+                     (name, key, role))
 
 
-def history(bot, sender, route, age=0, is_dm=True):
-    stamp = datetime.fromtimestamp(time.time()-age, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+def advert(bot, key, hashes, width=1, age=0, ptype="advert"):
+    stamp = datetime.fromtimestamp(time.time()-age, timezone.utc).isoformat()
     with bot.db_manager.connection() as conn:
-        conn.execute(
-            "INSERT INTO message_stats(sender_id,is_dm,path,created_at) VALUES(?,?,?,?)",
-            (sender, int(is_dm), route, stamp)
-        )
+        conn.execute("""INSERT INTO observed_paths
+            (public_key,packet_type,path_hex,bytes_per_hop,observation_count,last_seen)
+            VALUES(?,?,?,?,?,?)""", (key, ptype, hashes, width, 2, stamp))
 
 
-def incoming(text="!autotrace Dee", label="Alice", key=SOURCE, path="11,22,33"):
-    msg = mock_message(content=text, sender_id=label, is_dm=True, path=path)
-    msg.sender_pubkey = key
+def user(text="!autotrace Dee"):
+    msg = mock_message(content=text, sender_id="Alice", is_dm=True)
+    msg.sender_pubkey = USER
     return msg
 
 
-def run_cmd(cmd, msg):
+def send(cmd, text):
     cmd.send_response = AsyncMock(return_value=True)
-    asyncio.run(cmd.execute(msg))
-    text = cmd.send_response.call_args.args[1]
-    assert len(text.encode("utf-8")) <= 158
-    return text
+    asyncio.run(cmd.execute(user(text)))
+    result = cmd.send_response.call_args.args[1]
+    assert len(result.encode()) <= 158
+    return result
 
 
-def test_strict_route_parser():
-    assert parse_route("11,22,33 (3 hops)") == ("11", "22", "33")
-    assert parse_route("1122,3344") == ("1122", "3344")
-    assert parse_route("112233,445566") is None
-    assert parse_route("11,2233") is None
-    assert parse_route("11,22,33,44,55,66") is None
+def test_decode_observed_three_byte_sample_and_empty_path(tmp_path):
+    cmd = AutotraceCommand(make_bot(tmp_path))
+    assert cmd._decode_observed("b1b3e6a53e96bcadb8", 3) == (
+        "b1b3e6", "a53e96", "bcadb8"
+    )
+    assert cmd._decode_observed("", 1) is None
+    assert cmd._decode_observed("b1b3e6a53e96bcadb8", 1) is not None
+    assert cmd._decode_observed("b1b3e6a53e96bcadb8", 4) is None
 
 
-def test_join_only_at_observed_common_suffix():
-    assert candidate_route(("11", "22", "33"), ("aa", "22", "33")) == ("11", "22", "aa")
-    assert candidate_route(("11", "22"), ("aa", "bb")) is None
-    assert candidate_route(("11",), ("1122",)) is None
-    assert candidate_route(("11", "22", "33"), ("44", "55", "33"), 3) is None
-
-
-def test_named_target_returns_user_side_route_without_probes(tmp_path):
+def test_adverts_are_bound_to_source_key_and_no_probe(tmp_path):
     bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    history(bot, "Alice", "11,22,33")
-    history(bot, "Dee", "aa,22,33")
-    bot.meshcore.commands.send_trace = AsyncMock()
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa2233")
     cmd = AutotraceCommand(bot)
-    text = run_cmd(cmd, incoming())
-    assert "tracer 11,22,aa" in text
-    assert "candidate" in text
+    result = send(cmd, "!autotrace Dee")
+    assert "tracer 11,22,aa" in result
+    assert "candidate" in result
     bot.meshcore.commands.send_trace.assert_not_awaited()
 
 
-def test_six_hex_target_and_paths_are_read_only(tmp_path):
+def test_multibyte_and_one_byte_adverts_join_by_full_repeater_keys(tmp_path):
     bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    history(bot, "Dee", "aa,22,33")
+    advert(bot, USER, "11aabb22aabb33aabb", width=3)
+    advert(bot, DEE, "aa2233", width=1)
+    out = send(AutotraceCommand(bot), "!autotrace D13584")
+    assert "tracer 11,22,aa" in out
+
+
+def test_repeater_target_includes_repeater_itself(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, RELAY_AA, "2233")
+    assert "tracer 11,22,aa" in send(AutotraceCommand(bot), "!autotrace RAA")
+
+
+def test_no_shared_repeater_path_is_rejected(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa")
+    assert "no safely joinable" in send(AutotraceCommand(bot), "!autotrace Dee")
+
+
+def test_empty_advert_does_not_make_a_route(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "")
+    assert "no target advert route" in send(AutotraceCommand(bot), "!autotrace Dee")
+
+
+def test_prefix_collision_is_rejected(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa2233")
+    contact(bot, "Dee2", "d13584" + "1" * 58, "companion")
+    assert "ambiguous" in send(AutotraceCommand(bot), "!autotrace d13584")
+
+
+def test_short_repeater_hash_collision_is_rejected(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa2233")
+    contact(bot, "Another-22", "22ffff" + "0" * 58, "repeater")
+    assert "no safely joinable" in send(AutotraceCommand(bot), "!autotrace Dee")
+
+
+def test_cooldown_only_for_recommendation_not_paths(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, USER, "112233")
+    advert(bot, DEE, "aa2233")
     cmd = AutotraceCommand(bot)
-    out = run_cmd(cmd, incoming("!autotrace ABCDEF paths"))
-    assert "11,22,aa" in out
-    assert cmd._last_user == {}
-    assert cmd._last_global == float("-inf")
+    assert "tracer" in send(cmd, "!autotrace Dee")
+    assert "cooldown" in send(cmd, "!autotrace Dee")
+    assert "11,22,aa" in send(cmd, "!autotrace Dee paths")
 
 
-def test_no_shared_repeater_means_no_candidate(tmp_path):
+def test_no_advert_by_requester_fails_instead_of_using_other_user(tmp_path):
     bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    history(bot, "Dee", "aa,bb,cc")
-    out = run_cmd(AutotraceCommand(bot), incoming())
-    assert "no shared route" in out
-
-
-def test_prefix_collision_never_chooses_target(tmp_path):
-    bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    contact(bot, "Other", "abcdef" + "3" * 58)
-    out = run_cmd(AutotraceCommand(bot), incoming("!autotrace ABCDEF"))
-    assert "ambiguous" in out
-
-
-def test_repeater_target_uses_recorded_route_suffix(tmp_path):
-    bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Relay", REP, "repeater")
-    contact(bot, "OtherRelay", OTHER, "repeater")
-    history(bot, "Other", "bb,22,33")
-    out = run_cmd(AutotraceCommand(bot), incoming("!autotrace bbccdd"))
-    assert "tracer 11,22,bb" in out
-
-
-def test_repeater_hash_collision_refuses_identity(tmp_path):
-    bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Relay", REP, "repeater")
-    contact(bot, "Collision", "bbdddd" + "3" * 58, "repeater")
-    history(bot, "Other", "bb,22,33")
-    out = run_cmd(AutotraceCommand(bot), incoming("!autotrace bbccdd"))
-    assert "no observed target route" in out
-
-
-def test_recommendation_cooldown_rejects_second_attempt(tmp_path):
-    bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    history(bot, "Dee", "aa,22,33")
-    cmd = AutotraceCommand(bot)
-    assert "tracer" in run_cmd(cmd, incoming())
-    assert "cooldown" in run_cmd(cmd, incoming())
-    # Viewing candidates remains possible during cooldown.
-    assert "11,22,aa" in run_cmd(cmd, incoming("!autotrace Dee paths"))
-
-
-def test_unverified_history_label_never_invents_route(tmp_path):
-    bot = make_bot(tmp_path)
-    contact(bot, "Alice", SOURCE)
-    contact(bot, "Dee", TARGET)
-    contact(bot, "Dee", "123456" + "2" * 58)
-    history(bot, "Dee", "aa,22,33")
-    assert "ambiguous" in run_cmd(AutotraceCommand(bot), incoming("!autotrace Dee"))
+    advert(bot, DEE, "aa2233")
+    assert "no source advert route" in send(AutotraceCommand(bot), "!autotrace Dee")
