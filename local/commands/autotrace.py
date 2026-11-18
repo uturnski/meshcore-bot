@@ -7,6 +7,7 @@ reported as an unverified candidate, not proof of bidirectional RF connectivity.
 """
 from datetime import datetime, timedelta
 import hashlib
+import heapq
 import re
 import sqlite3
 import time
@@ -85,6 +86,8 @@ class AutotraceCommand(BaseCommand):
          "type": "int", "min": 1, "max": 5, "default": 5},
         {"key": "max_route_age_hours", "label": "Observation age",
          "type": "int", "min": 1, "max": 168, "default": 24},
+        {"key": "graph_edge_age_hours", "label": "Maximum graph-edge age",
+         "type": "int", "min": 1, "max": 168, "default": 72},
     ]
 
     def __init__(self, bot):
@@ -96,6 +99,7 @@ class AutotraceCommand(BaseCommand):
         self.global_seconds = max(0, self._int("global_cooldown_seconds", 60))
         self.max_hops = max(1, min(5, self._int("maximum_hops", 5)))
         self.route_age_hours = max(1, min(168, self._int("max_route_age_hours", 24)))
+        self.graph_edge_hours = max(1, min(168, self._int("graph_edge_age_hours", 72)))
         self._last_user = {}
         self._last_global = float("-inf")
 
@@ -293,6 +297,122 @@ class AutotraceCommand(BaseCommand):
             return tuple(node[:count] for node in joined)
         return None
 
+    @staticmethod
+    def _unique_graph_identity(prefix, recorded_key, candidates):
+        """Resolve an endpoint to exactly one full public key."""
+        short = str(prefix or "").strip().lower()
+        stored = str(recorded_key or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{2,64}", short) or len(short) % 2:
+            return None
+        if stored and (not PUBKEY.fullmatch(stored) or not stored.startswith(short)
+                       or stored not in candidates):
+            return None
+        matches = {key for key in candidates if key.startswith(short)}
+        if len(matches) != 1:
+            return None
+        key = next(iter(matches))
+        return key if not stored or stored == key else None
+
+    @staticmethod
+    def _encode_graph_route(full_keys, known_repeaters):
+        """Emit only traceable, uniquely identifiable one-/two-byte hashes."""
+        for width in (2, 4):
+            tokens = tuple(k[:width] for k in full_keys)
+            if len(set(tokens)) == len(tokens) and all(
+                sum(k.startswith(token) for k in known_repeaters) == 1
+                for token in tokens
+            ):
+                return tokens
+        return None
+
+    def _graph_candidates(self, conn, source_key, target_key, target_role,
+                          target_adverts, contacts):
+        """Build bounded hypotheses from source->relay and repeater graph rows.
+
+        A recorded source->first-relay edge is mandatory; remaining graph
+        connections are directional observations treated as unverified
+        reverse-capable links, never as proven RF connectivity.
+        """
+        repeaters = self._repeater_keys(contacts)
+        all_contacts = {c[1] for c in contacts} | {source_key}
+        cutoff = (datetime.now() - timedelta(
+            hours=self.graph_edge_hours
+        )).strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            """SELECT from_prefix, to_prefix, from_public_key, to_public_key,
+                      observation_count, last_seen
+               FROM mesh_connections
+               WHERE datetime(last_seen)>=datetime(?)
+               ORDER BY observation_count DESC, last_seen DESC LIMIT 8000""",
+            (cutoff,),
+        ).fetchall()
+        first_hops = {}
+        adjacency = {}
+        for from_pre, to_pre, from_key, to_key, count, stamp in rows:
+            left_pre = str(from_pre or "").strip().lower()
+            right_pre = str(to_pre or "").strip().lower()
+            n = max(1, int(count or 1))
+            if (len(left_pre) >= 6 and source_key.startswith(left_pre)
+                    and self._unique_graph_identity(
+                        left_pre, from_key, all_contacts
+                    ) == source_key):
+                neighbor = self._unique_graph_identity(
+                    right_pre, to_key, repeaters
+                )
+                if neighbor:
+                    first_hops[neighbor] = max(first_hops.get(neighbor, 0), n)
+            left = self._unique_graph_identity(left_pre, from_key, repeaters)
+            right = self._unique_graph_identity(right_pre, to_key, repeaters)
+            if left and right and left != right:
+                adjacency.setdefault(left, {})[right] = max(
+                    n, adjacency.get(left, {}).get(right, 0)
+                )
+                adjacency.setdefault(right, {})[left] = max(
+                    n, adjacency.get(right, {}).get(left, 0)
+                )
+        if not first_hops:
+            return [], "AutoTrace: no recent user-to-repeater link"
+        # A companion target's first advertised repeater is the terminal
+        # diagnostic hop. A repeater target itself is the terminal hop.
+        terminals = set()
+        if target_role in ("repeater", "roomserver"):
+            terminals.add(target_key)
+        else:
+            for nodes, _, _ in target_adverts:
+                full_nodes = self._keyed_nodes(nodes, repeaters)
+                if full_nodes:
+                    terminals.add(full_nodes[0])
+        if not terminals:
+            return [], "AutoTrace: no resolvable target advert hop"
+        options = {}
+        # Bounded search: fewest hops first, then strongest weakest link.
+        for first, first_count in first_hops.items():
+            heap = [(1, -first_count, (first,))]
+            while heap:
+                hops, neg_support, route = heapq.heappop(heap)
+                node = route[-1]
+                if node in terminals:
+                    encoded = self._encode_graph_route(route, repeaters)
+                    if encoded:
+                        options[encoded] = max(
+                            options.get(encoded, 0), -neg_support
+                        )
+                    continue
+                if hops >= self.max_hops:
+                    continue
+                for neighbor, count in adjacency.get(node, {}).items():
+                    if neighbor in route:
+                        continue
+                    heapq.heappush(heap, (
+                        hops + 1, -min(-neg_support, count), route + (neighbor,),
+                    ))
+        if not options:
+            return [], "AutoTrace: graph has no unambiguous path"
+        ranked = sorted(
+            options.items(), key=lambda x: (len(x[0]), -x[1], x[0])
+        )[:3]
+        return [(route, "historical graph") for route, _ in ranked], None
+
     def _proposals(self, message, target=None):
         with self.bot.db_manager.connection() as conn:
             tables = {r[0] for r in conn.execute(
@@ -315,10 +435,6 @@ class AutotraceCommand(BaseCommand):
             sources = [(current, None, 1)] if current is not None else []
             if not sources:
                 sources = self._observed(conn, source_key)
-            if not sources:
-                if current_status == "direct":
-                    return [], "AutoTrace: RF says direct; no relay route"
-                return [], "AutoTrace: DM route unknown; no source advert"
             if target is None:
                 # 'autotrace paths' without a target shows raw inbound paths,
                 # never claims these are a user-to-other-node recommendation.
@@ -330,7 +446,7 @@ class AutotraceCommand(BaseCommand):
             if target_key == source_key:
                 return [], "AutoTrace: target is your own node"
             target_routes = self._observed(conn, target_key)
-            if not target_routes:
+            if not target_routes and tgt[2] not in ("repeater", "roomserver"):
                 return [], "AutoTrace: no target advert route"
             proposals, seen = [], set()
             target_rep = target_key if tgt[2] in ("repeater", "roomserver") else None
@@ -351,7 +467,11 @@ class AutotraceCommand(BaseCommand):
                         proposals.append((path, tgt[0]))
                         if len(proposals) >= 3:
                             return proposals, None
-            return [], "AutoTrace: no safely joinable observed routes"
+            if "mesh_connections" not in tables:
+                return [], "AutoTrace: mesh_connections unavailable"
+            return self._graph_candidates(
+                conn, source_key, target_key, tgt[2], target_routes, contacts
+            )
 
     async def _reply(self, message, lines):
         limit = min(158, self.get_max_message_length(message))
