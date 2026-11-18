@@ -148,9 +148,7 @@ candidate exceeds the outgoing-hop budget. `observed_paths.last_seen`
 is written using local naive `datetime.now()`, so AutoTrace's age filter
 uses the same clock convention.
 
-A direct (zero-hop) DM is **not** a missing route: the bot replies
-`AutoTrace: direct to bot; no relay route` rather than inventing a
-forwardable repeater hop. A DM with a valid recorded repeater sequence
+An explicit **correlated RF zero-hop** indication is a direct route; without any historical source path the bot reports `AutoTrace: RF says direct; no relay route`. But upstream `message_handler.py` also formats `path_len=255` (unknown) as `Direct (0 hops)`; AutoTrace now treats that legacy display as **unknown**, not proof of a direct RF connection. Without a usable correlated DM route or a source advertisement it replies `AutoTrace: DM route unknown; no source advert` rather than inventing a forwardable hop. A DM with a valid recorded repeater sequence
 works even when the requester never advertises and has no entry in
 `observed_paths` (the cause of the original `no source advert route`
 error). Original one-, two-, and three-byte path widths are preserved
