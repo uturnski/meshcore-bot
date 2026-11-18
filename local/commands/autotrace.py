@@ -318,16 +318,18 @@ class AutotraceCommand(BaseCommand):
         if action == "paths":
             if not routes:
                 return await self._reply(message, ["AutoTrace: no valid recent DM routes"])
-            lines = [f"AutoTrace: {len(routes)} recent route(s)"]
+            heading = ("AutoTrace " + target[0][:16] + ": " if target_query else "AutoTrace: ")
+            lines = [f"{heading}{len(routes)} recent route(s)"]
             for index, (nodes, created) in enumerate(routes, 1):
                 lines.append(f"{index}. {','.join(nodes)}")
-            lines.append("History by contact name; not verified.")
+            lines.append("Observed paths only; not proof of identity.")
             return await self._reply(message, lines)
         if not routes:
-            return await self._reply(message, [f"AutoTrace: no usable DM route in {self.route_age_hours}h"])
+            return await self._reply(message, [f"AutoTrace: no usable observed route in {self.route_age_hours}h"])
         index = int(action) - 1 if action else 0
         if index >= len(routes):
-            return await self._reply(message, ["AutoTrace: route not available", "Try !autotrace paths"])
+            hint = ("!autotrace " + target_query + " paths") if target_query else "!autotrace paths"
+            return await self._reply(message, ["AutoTrace: route not available", "Try " + hint[:70]])
         key = self._identity(message)
         if key is None:
             return await self._reply(message, ["AutoTrace: sender public key required"])
