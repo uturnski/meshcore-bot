@@ -169,6 +169,53 @@ class AutotraceCommand(BaseCommand):
         # At most 16 observed hops are decoded; only a final candidate is capped
         return nodes if 0 < len(nodes) <= 16 else None
 
+    @classmethod
+    def _incoming_dm_route(cls, message):
+        """Current sender->bot route; never a route from a different node.
+
+        Returns (nodes, status). Direct, missing and malformed are distinct
+        so a zero-hop packet cannot be mistaken for an absent record.
+        """
+        info = getattr(message, "routing_info", None) or {}
+        if not isinstance(info, dict):
+            info = {}
+        raw_nodes = info.get("path_nodes")
+        try:
+            hop_count = int(info["path_length"]) if info.get("path_length") is not None else None
+        except (TypeError, ValueError):
+            hop_count = None
+        if hop_count == 0:
+            return None, "direct"
+
+        if isinstance(raw_nodes, (list, tuple)) and raw_nodes:
+            nodes = tuple(str(node).strip().lower() for node in raw_nodes)
+            if (len(nodes) <= 16 and len({len(x) for x in nodes}) == 1
+                    and len(nodes[0]) in (2, 4, 6)
+                    and all(re.fullmatch(r"[0-9a-f]+", x) for x in nodes)
+                    and (hop_count is None or hop_count == len(nodes))):
+                return nodes, "routed"
+
+        path_hex = str(info.get("path_hex") or "").strip()
+        bph = info.get("bytes_per_hop")
+        if path_hex and bph is not None:
+            nodes = cls._decode_observed(path_hex, bph)
+            if nodes and (hop_count is None or hop_count == len(nodes)):
+                return nodes, "routed"
+
+        plain = str(getattr(message, "path", "") or "").strip()
+        if re.match(r"^(?:direct|0 hops?\b)", plain, re.IGNORECASE):
+            return None, "direct"
+        # Keep the whole observed sequence (maximum 16), not a truncated path.
+        m = PATH.match(plain)
+        if m:
+            parts = tuple(piece.strip().lower() for piece in m.group(1).split(","))
+            if (len(parts) <= 16 and len({len(x) for x in parts}) == 1
+                    and len(parts[0]) in (2, 4, 6)
+                    and all(re.fullmatch(r"[a-f0-9]+", x) for x in parts)
+                    and (hop_count is None or hop_count == len(parts))):
+                return parts, "routed"
+        return None, "missing"
+
     def _observed(self, conn, public_key):
         """Advertisement paths are bound to their full originating public key."""
         # observed_paths.last_seen is written with naive local datetime.now().
@@ -261,11 +308,18 @@ class AutotraceCommand(BaseCommand):
             repeater_keys = self._repeater_keys(contacts)
             if not repeater_keys:
                 return [], "AutoTrace: no known repeater identities"
-            # Only origin-linked ADVERT paths; message_stats display names do
-            # not provide a cryptographic source-to-public-key association.
-            sources = self._observed(conn, source_key)
+            # The incoming command is direct evidence of this requester's
+            # sender->bot RF path, even when the companion never advertises.
+            # Only if it lacks a usable multi-hop route do we try advertised
+            # paths bound to the requester's full public key.
+            current, current_status = self._incoming_dm_route(message)
+            if current_status == "direct":
+                return [], "AutoTrace: direct to bot; no relay route"
+            sources = [(current, None, 1)] if current is not None else []
             if not sources:
-                return [], "AutoTrace: no source advert route"
+                sources = self._observed(conn, source_key)
+            if not sources:
+                return [], "AutoTrace: no incoming DM or source advert route"
             if target is None:
                 # 'autotrace paths' without a target shows raw inbound paths,
                 # never claims these are a user-to-other-node recommendation.
