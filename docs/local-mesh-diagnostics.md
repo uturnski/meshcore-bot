@@ -84,20 +84,40 @@ RF hop**, not separately for each repeater. It never contacts individual
 repeaters or sends extra test packets. The built-in ping template from
 `[Keywords] ping` remains available through `!pingplain`.
 
-## AutoTrace: historical reciprocal routing (experimental)
+## AutoTrace: user-originated route recommendations (experimental)
 
-The local `!autotrace` command reuses upstream's `TraceCommand` reciprocal-path
-helper and the shared `run_trace` engine; it does **not** implement a second radio
-trace protocol. The feature is **disabled by default**.
+**AutoTrace is now read-only with respect to trace probes.** The bot
+analyzes previously received message paths and suggests a repeater sequence
+**from the requesting companion toward the named target**. It **does not**
+invoke `send_trace` or initiate a trace from the bot's radio. Users must
+run `tracer <path>` from their *own* companion/client, if supported.
 
-| DM command | Effect |
+| DM command | Behavior |
 |---|---|
-| `!autotrace paths` | Up to 3 recent distinct received DM paths from SQLite; **no trace RF** |
-| `!autotrace` or `!autotrace 1` | Trace the newest valid historical path, one attempt |
-| `!autotrace 2` / `!autotrace 3` | Trace that ranked historical path if it exists |
-| `!autotrace Dee` | Admin DM: resolve exactly one heard contact name and trace a stored path |
-| `!autotrace a1b2c3` | Admin DM: resolve a **3-byte public-key prefix** to exactly one heard contact |
-| `!autotrace Dee paths` | Admin DM: list available historical routes to named contact, no trace RF |
+| `!autotrace` / `!autotrace paths` | Your observed inbound repeater sequences to the bot (not a user-to-target trace) |
+| `!autotrace Dee` | Recommend a path from **you** toward Dee, using a shared observed repeater |
+| `!autotrace a1b2c3` | Resolve the uniquely matching heard contact by first 3 bytes of its full public key |
+| `!autotrace Dee paths` | List up to three candidate paths with no active probe |
+| `!autotrace Dee 2` | Show the second suggestion as a manual user-side `tracer` path |
+
+To construct a recommendation, the bot matches the requester's *current*
+received DM route (or recent stored DM route with a uniquely matching
+contact/public-key identity) with the target's recent received DM path.
+For a repeater target, the bot can also use paths where the target
+appeared as a verified, non-colliding repeater prefix. Paths are joined
+only at a **shared observed repeater suffix toward the bot**. It will not
+fabricate a connection or assume that two repeaters link merely because
+they are geographically close. If no shared route evidence exists,
+the command explains that no recommendation is available.
+
+The route is still an **inference**: the observations are directional,
+and radio links can be asymmetric. A reply from `tracer` tests repeaters
+along the candidate route, **not the final companion's receipt**. Stored
+message paths are indexed by display name, not cryptographically bound
+to a public key; names are checked for uniqueness where possible and
+full-key prefix collisions are rejected. Trace routes are limited to
+uniform one-/two-byte repeater hashes, at most five hops. The six-digit
+target ID is an identity lookup, **not** 3-byte trace encoding.
 
 ```ini
 [Autotrace_Command]
@@ -108,43 +128,18 @@ maximum_hops = 5
 max_route_age_hours = 24
 ```
 
-**Airtime safeguards:** active commands require an authenticated 64-hex sender
-public key and a DM; reserve the 15-minute per-user and 60-second global
-cooldowns *before* any network send, including failed sends/timeouts; allow
-one in-flight AutoTrace at a time; no fallback paths or automatic extra
-attempts. Admin ACL members can bypass only the per-user interval, not the
-global cooldown or concurrency limit. The shared trace runner now accepts
-a per-call `max_attempts_override=1`; ordinary `!trace` still uses its configured
-retry count. `!autotrace paths` bypasses these RF-specific cooldowns, but
-still uses normal bot DM response rate-limiting.
+These two cooldowns limit **new recommendation replies** (15 minutes
+per sender and 60 seconds between active recommendations), not any
+trace traffic—the bot sends no trace packets. The read-only `paths`
+lookup bypasses these special cooldowns but still sends a normal DM
+response subject to standard bot-wide transmit limits. Cooldowns are
+held in memory and reset on service restart. No target lookup requires
+administrator privileges in this version. The feature remains
+**disabled by default** until tested.
 
-**Target selection:** Names require an unambiguous full-name match (or an
-unambiguous partial-name match). Six hexadecimal digits are interpreted as the
-first **three bytes of the target's full public key**, not the trace route's
-hash width. Ambiguous matches fail closed; do not infer that three-byte identity
-hashes can be used directly in a one-byte MeshCore trace. Companion trace
-candidates must come from that contact label's observed DM route, which
-upstream stores without a verified public-key association. For repeaters the
-bot finds an observed repeater hash in a received packet route and traces the
-suffix of that route toward the repeater, rejecting collisions against all
-known repeater public keys. Seeing a node advertise, without usable route
-evidence, is not enough. Targeted lookups are **admin-only**; own-route
-lookup remains available to normal DM users.
-
-**Route safety:** the bot uses received `created_at` timestamps rather than
-sender-supplied clocks. Reject stale, malformed, mixed-width, >5-hop or
-currently unsupported 3-byte trace paths. Historical DM records are
-indexed by contact *display name* in upstream `message_stats`, so the saved
-route **is not cryptographically bound to the requesting public key** and
-may be confused by duplicate/renamed labels. Access is restricted to
-the requesting contact label; no arbitrary history lookup is supported.
-Successful traces verify a repeater round-trip to the bot, **not delivery
-to the companion**. Routes are reversed from sender-to-bot and made
-reciprocal before passing to the shared runner. This feature does not
-globally lock the existing manually invoked `!trace` command.
-
-Testing: `python -m pytest tests/test_autotrace_local.py -q` (mock radio,
-SQLite fixture). Production RF still requires a controlled field test.
+Tests: `python -m pytest tests/test_autotrace_local.py -q`.
+The tests use local SQLite data and a mock radio; run them before
+enabling the feature on a live node.
 
 ## Install on Debian
 
