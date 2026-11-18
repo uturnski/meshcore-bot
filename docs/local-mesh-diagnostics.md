@@ -112,6 +112,40 @@ For `!autotrace Dee` or `!autotrace d13584`, AutoTrace:
 6. Returns a manual path such as `tracer 11,22,aa` for execution **on the
    user's own radio**. The bot **never calls** `run_trace` or `send_trace`.
 
+### Graph-assisted fallback for direct or unknown DMs
+
+When the requesting companion has no routed DM and no own advertisement
+history (as in a **DIRECT, 0-hop** `TXT_MSG`), AutoTrace now examines
+`mesh_connections`. It requires a **recorded user-prefix -> repeater**
+edge that resolves unambiguously to the requester's full key and a
+repeater's full key. It will not use mere bot proximity as evidence that
+the requester can reach a repeater.
+
+It then uses recent **repeater-to-repeater** graph edges (treated as
+potentially reversible, **not tested**), and routes toward the target's
+first repeater from `observed_paths` adverts. Repeater targets may be
+the final hop themselves even if their advert has a blank `path_hex`.
+The candidate uses uniquely resolvable one- or two-byte hashes only;
+collisions are rejected. Search caps: at most 5 output hops, 25 first
+hops, 30 neighbors per expanded node, 2000 expansions per first hop.
+
+The graph lookback is independently set to **72 hours** by default,
+because older source-to-repeater edges might remain useful when the
+current DM is direct. The bot labels such results **historical graph
+candidates** and does not claim reverse-direction RF connectivity.
+The incoming command is still processed as a DM and only a recommendation
+reply is sent—never a bot-originated trace.
+
+For example, if `423523 -> A53E96` was observed two days ago, the
+system may recommend `A53E96,...` toward a destination only when the
+remaining links are present in the graph and the target route is known.
+If there is no recent first-hop observation, it reports
+`AutoTrace: no recent user-to-repeater link`.
+
+```ini
+graph_edge_age_hours = 72
+```
+
 For a **repeater target**, its own public key can be the final repeater
 hop. For a **companion target**, the suggested trace ends at its first
 advertisement repeater, **not at the companion**. This does not validate the
@@ -136,6 +170,7 @@ per_user_cooldown_seconds = 900
 global_cooldown_seconds = 60
 maximum_hops = 5
 max_route_age_hours = 24
+graph_edge_age_hours = 72
 ```
 
 The per-user and global cooldowns limit **recommendation replies**, not
