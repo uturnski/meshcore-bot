@@ -1643,6 +1643,15 @@ enabled = true
 [Help_Command]
 enabled = true
 # channels =
+[Autotrace_Command]
+# DM-only historical reciprocal traces; read-only "paths" does not spend trace RF.
+# Disabled by default until tested on the mesh.
+enabled = false
+per_user_cooldown_seconds = 900
+global_cooldown_seconds = 60
+maximum_hops = 5
+max_route_age_hours = 24
+
 [Heardme_Command]
 # Custom local command: !heardme / !seenme (DM only)
 # Installed at /opt/meshcore-bot/local/commands/heardme.py
