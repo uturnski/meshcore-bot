@@ -53,6 +53,10 @@ def make_bot(tmp_path):
             id INTEGER PRIMARY KEY, public_key TEXT, packet_type TEXT,
             path_hex TEXT, bytes_per_hop INTEGER,
             observation_count INTEGER, last_seen TEXT)""")
+        conn.execute("""CREATE TABLE mesh_connections(
+            from_prefix TEXT, to_prefix TEXT,
+            from_public_key TEXT, to_public_key TEXT,
+            observation_count INTEGER, last_seen TEXT)""")
     for name, key, role in [
         ("Alice", USER, "companion"), ("Dee", DEE, "companion"),
         ("R11", RELAY_11, "repeater"), ("R22", RELAY_22, "repeater"),
@@ -74,6 +78,15 @@ def advert(bot, key, hashes, width=1, age=0, ptype="advert"):
         conn.execute("""INSERT INTO observed_paths
             (public_key,packet_type,path_hex,bytes_per_hop,observation_count,last_seen)
             VALUES(?,?,?,?,?,?)""", (key, ptype, hashes, width, 2, stamp))
+
+
+def graph_edge(bot, source, dest, age=0, count=2, source_key=None, dest_key=None):
+    stamp = datetime.fromtimestamp(time.time()-age, timezone.utc).isoformat()
+    with bot.db_manager.connection() as conn:
+        conn.execute("""INSERT INTO mesh_connections
+            (from_prefix,to_prefix,from_public_key,to_public_key,
+             observation_count,last_seen) VALUES(?,?,?,?,?,?)""",
+            (source, dest, source_key, dest_key, count, stamp))
 
 
 def user(text="!autotrace Dee"):
@@ -130,7 +143,7 @@ def test_no_shared_repeater_path_is_rejected(tmp_path):
     bot = make_bot(tmp_path)
     advert(bot, USER, "112233")
     advert(bot, DEE, "aa")
-    assert "no safely joinable" in send(AutotraceCommand(bot), "!autotrace Dee")
+    assert "no recent user-to-repeater link" in send(AutotraceCommand(bot), "!autotrace Dee")
 
 
 def test_empty_advert_does_not_make_a_route(tmp_path):
@@ -153,7 +166,7 @@ def test_short_repeater_hash_collision_is_rejected(tmp_path):
     advert(bot, USER, "112233")
     advert(bot, DEE, "aa2233")
     contact(bot, "Another-22", "22ffff" + "0" * 58, "repeater")
-    assert "no safely joinable" in send(AutotraceCommand(bot), "!autotrace Dee")
+    assert "no recent user-to-repeater link" in send(AutotraceCommand(bot), "!autotrace Dee")
 
 
 def test_cooldown_only_for_recommendation_not_paths(tmp_path):
@@ -169,7 +182,7 @@ def test_cooldown_only_for_recommendation_not_paths(tmp_path):
 def test_no_advert_by_requester_fails_without_current_dm_route(tmp_path):
     bot = make_bot(tmp_path)
     advert(bot, DEE, "aa2233")
-    assert "no incoming DM or source advert route" in send(AutotraceCommand(bot), "!autotrace Dee")
+    assert "no recent user-to-repeater link" in send(AutotraceCommand(bot), "!autotrace Dee")
 
 
 def test_current_dm_path_works_with_no_requester_advert(tmp_path):
@@ -234,7 +247,7 @@ def test_direct_dm_is_not_reported_as_missing_or_used_as_repeater(tmp_path):
     cmd = AutotraceCommand(bot)
     cmd.send_response = AsyncMock(return_value=True)
     asyncio.run(cmd.execute(msg))
-    assert "RF says direct; no relay route" in cmd.send_response.call_args.args[1]
+    assert "no recent user-to-repeater link" in cmd.send_response.call_args.args[1]
     bot.meshcore.commands.send_trace.assert_not_awaited()
 
 
@@ -247,7 +260,7 @@ def test_unknown_direct_display_is_not_proof_of_direct_rf(tmp_path):
     cmd = AutotraceCommand(bot)
     cmd.send_response = AsyncMock(return_value=True)
     asyncio.run(cmd.execute(msg))
-    assert "DM route unknown" in cmd.send_response.call_args.args[1]
+    assert "no recent user-to-repeater link" in cmd.send_response.call_args.args[1]
 
 
 def test_actual_routing_nodes_override_incorrect_zero_length(tmp_path):
@@ -272,3 +285,81 @@ def test_missing_dm_metadata_can_fallback_to_adverts(tmp_path):
     cmd.send_response = AsyncMock(return_value=True)
     asyncio.run(cmd.execute(msg))
     assert "tracer 11,22,aa" in cmd.send_response.call_args.args[1]
+
+
+def test_direct_dm_graph_fallback_with_historical_first_hop(tmp_path):
+    bot = make_bot(tmp_path)
+    # Exactly the user's case: no USER advert, incoming direct, graph first
+    # hop recorded two days earlier, Dee advert path ends toward the bot.
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "a1a1a1", "22aabb", age=48 * 3600, count=11)
+    graph_edge(bot, "22aabb", "aaaabb", age=1200, count=618)
+    msg = user("!autotrace Dee")
+    msg.routing_info = {"path_length": 0, "path_nodes": []}
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    asyncio.run(cmd.execute(msg))
+    reply = cmd.send_response.call_args.args[1]
+    assert "tracer 22,aa" in reply
+    assert "candidate" in reply
+    bot.meshcore.commands.send_trace.assert_not_awaited()
+
+
+def test_graph_fallback_requires_source_link_not_just_repeater_path(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "22aabb", "aaaabb", count=800)
+    assert "no recent user-to-repeater link" in send(
+        AutotraceCommand(bot), "!autotrace Dee"
+    )
+
+
+def test_graph_rejects_old_first_hop(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "a1a1a1", "22aabb", age=96 * 3600, count=50)
+    graph_edge(bot, "22aabb", "aaaabb", count=800)
+    assert "no recent user-to-repeater link" in send(
+        AutotraceCommand(bot), "!autotrace Dee"
+    )
+
+
+def test_graph_refuses_ambiguous_repeater_identity(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "a1a1a1", "22aabb", count=11)
+    graph_edge(bot, "22aabb", "aaaabb", count=800)
+    contact(bot, "Clashing", "22aabb" + "1" * 58, "repeater")
+    assert "no recent user-to-repeater link" in send(
+        AutotraceCommand(bot), "!autotrace Dee"
+    )
+
+
+def test_graph_ranks_shorter_routes_and_avoids_cycles(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "a1a1a1", "11aabb", count=11)
+    graph_edge(bot, "11aabb", "22aabb", count=8)
+    graph_edge(bot, "22aabb", "aaaabb", count=50)
+    graph_edge(bot, "11aabb", "aaaabb", count=5)
+    assert "tracer 11,aa" in send(AutotraceCommand(bot), "!autotrace Dee")
+
+
+def test_direct_to_target_repeater_with_zero_hop_advert(tmp_path):
+    bot = make_bot(tmp_path)
+    graph_edge(bot, "a1a1a1", "aaaabb", count=4)
+    # Repeater ADVERT may have empty path_hex (received at bot directly)
+    advert(bot, RELAY_AA, "")
+    assert "tracer aa" in send(AutotraceCommand(bot), "!autotrace RAA")
+
+
+def test_graph_reply_cooldown_and_paths_remain_read_only(tmp_path):
+    bot = make_bot(tmp_path)
+    advert(bot, DEE, "aa2233")
+    graph_edge(bot, "a1a1a1", "22aabb", count=11)
+    graph_edge(bot, "22aabb", "aaaabb", count=12)
+    cmd = AutotraceCommand(bot)
+    assert "tracer 22,aa" in send(cmd, "!autotrace Dee")
+    assert "cooldown" in send(cmd, "!autotrace Dee")
+    assert "22,aa" in send(cmd, "!autotrace Dee paths")
+    bot.meshcore.commands.send_trace.assert_not_awaited()
