@@ -178,4 +178,4 @@ def test_unverified_history_label_never_invents_route(tmp_path):
     contact(bot, "Dee", TARGET)
     contact(bot, "Dee", "123456" + "2" * 58)
     history(bot, "Dee", "aa,22,33")
-    assert "ambiguous" in run_cmd(AutotraceCommand(bot), incoming())
+    assert "ambiguous" in run_cmd(AutotraceCommand(bot), incoming("!autotrace Dee"))
