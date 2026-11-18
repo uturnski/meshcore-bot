@@ -60,6 +60,7 @@ def make_bot(tmp_path):
         db.execute("""CREATE TABLE message_stats (
             id INTEGER PRIMARY KEY, sender_id TEXT, is_dm INTEGER,
             path TEXT, created_at TEXT)""")
+        db.execute("CREATE TABLE complete_contact_tracking (name TEXT, public_key TEXT, role TEXT)")
         db.commit()
     return bot
 
@@ -150,3 +151,80 @@ def test_stale_or_missing_sender_key_never_transmits(tmp_path):
     with patch("local.commands.autotrace.run_trace", new_callable=AsyncMock) as runner:
         asyncio.run(cmd.execute(message(key=None)))
         runner.assert_not_awaited()
+
+def add_contact(bot, name, key, role="companion"):
+    with bot.db_manager.connection() as db:
+        db.execute("INSERT INTO complete_contact_tracking(name,public_key,role) VALUES(?,?,?)",
+                   (name, key, role))
+        db.commit()
+
+
+def test_prefix_resolution_is_unique(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "Dee", "abcdef" + "1" * 58)
+    cmd = AutotraceCommand(bot)
+    target, err = cmd._resolve_target("ABCDEF")
+    assert err is None and target[0] == "Dee"
+    add_contact(bot, "Another", "abcdef" + "2" * 58)
+    target, err = cmd._resolve_target("abcdef")
+    assert target is None and "ambiguous" in err
+
+
+def test_repeater_route_uses_only_suffix_after_selected_hop(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "RepeaterDee", "aabbcc" + "1" * 58, "repeater")
+    add_contact(bot, "OtherRepeater", "ddeeff" + "2" * 58, "repeater")
+    add_route(bot, "dd,aa,11 (3 hops)")
+    cmd = AutotraceCommand(bot)
+    target, error = cmd._resolve_target("aabbcc")
+    assert error is None
+    assert cmd._target_routes(target)[0][0] == ("aa", "11")
+
+
+def test_repeater_hash_collision_refuses_route(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "First", "aabbcc" + "1" * 58, "repeater")
+    add_contact(bot, "Second", "aaddee" + "2" * 58, "repeater")
+    add_route(bot, "dd,aa,11 (3 hops)")
+    cmd = AutotraceCommand(bot)
+    target, error = cmd._resolve_target("aabbcc")
+    assert error is None
+    assert cmd._target_routes(target) == []
+
+
+def test_named_companion_uses_own_dm_history(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "Dee", "abcdef" + "1" * 58)
+    add_route(bot, "01,7a", sender="Dee")
+    add_route(bot, "33,44", sender="Other")
+    cmd = AutotraceCommand(bot)
+    target, error = cmd._resolve_target("Dee")
+    assert error is None
+    assert [r[0] for r in cmd._target_routes(target)] == [("01", "7a")]
+
+
+def test_target_lookup_requires_admin(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "Dee", "abcdef" + "1" * 58)
+    add_route(bot, "01,7a", sender="Dee")
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    with patch("local.commands.autotrace.run_trace", new_callable=AsyncMock) as runner:
+        asyncio.run(cmd.execute(message(text="!autotrace Dee")))
+        runner.assert_not_awaited()
+    assert "admin-only" in cmd.send_response.call_args.args[1]
+
+
+def test_targeted_three_byte_prefix_executes_once_for_admin(tmp_path):
+    bot = make_bot(tmp_path)
+    add_contact(bot, "Dee", "abcdef" + "1" * 58)
+    add_route(bot, "01,7a", sender="Dee")
+    cmd = AutotraceCommand(bot)
+    cmd.send_response = AsyncMock(return_value=True)
+    with patch("local.commands.autotrace.run_trace",
+               new=AsyncMock(return_value=RunTraceResult(success=True,tag=1))) as runner:
+        asyncio.run(cmd.execute(message(sender="Admin",key=KEY_B,
+                                        text="!autotrace abcdef")))
+        runner.assert_awaited_once()
+        assert runner.await_args.kwargs["max_attempts_override"] == 1
+        assert runner.await_args.kwargs["path"] == ["7a","01","7a"]
