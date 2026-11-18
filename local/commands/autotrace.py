@@ -386,10 +386,16 @@ class AutotraceCommand(BaseCommand):
             return [], "AutoTrace: no resolvable target advert hop"
         options = {}
         # Bounded search: fewest hops first, then strongest weakest link.
-        for first, first_count in first_hops.items():
+        # Bound work on dense regional meshes: graph query is read-only, but
+        # a naive all-simple-path search would block the command event loop.
+        for first, first_count in sorted(
+            first_hops.items(), key=lambda pair: -pair[1]
+        )[:25]:
             heap = [(1, -first_count, (first,))]
-            while heap:
+            expanded = 0
+            while heap and expanded < 2000:
                 hops, neg_support, route = heapq.heappop(heap)
+                expanded += 1
                 node = route[-1]
                 if node in terminals:
                     encoded = self._encode_graph_route(route, repeaters)
@@ -400,7 +406,10 @@ class AutotraceCommand(BaseCommand):
                     continue
                 if hops >= self.max_hops:
                     continue
-                for neighbor, count in adjacency.get(node, {}).items():
+                for neighbor, count in sorted(
+                    adjacency.get(node, {}).items(),
+                    key=lambda pair: -pair[1]
+                )[:30]:
                     if neighbor in route:
                         continue
                     heapq.heappush(heap, (
