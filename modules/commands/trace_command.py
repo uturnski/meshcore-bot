@@ -28,7 +28,7 @@ class TraceCommand(BaseCommand):
 
     short_description = "Run link trace (manual or reciprocal path)"
     usage = "trace [path]  or  tracer [path]"
-    examples = ["trace 01,7a,55", "trace feed,6ddf,feed", "tracer", "tracer 01,7a,55"]
+    examples = ["trace 01,7a,55", "trace feed,6ddf,feed", "tracer", "tracer feed"]
 
     # Web-viewer settings schema (see modules/settings_schema.py)
     settings_schema = [
@@ -95,7 +95,8 @@ class TraceCommand(BaseCommand):
         return (
             "trace [path] — run trace along path (return may not be heard). No path = round-trip like tracer. "
             "tracer [path] — round-trip so bot hears return. Path: comma-separated hex nodes "
-            "(2-char 1-byte e.g. 01,7a,55; 4-char 2-byte e.g. feed,6ddf,feed). "
+            "(2-char 1-byte e.g. 01,7a,55; 4-char 2-byte e.g. feed,6ddf). "
+            "Single 2-/4-char value is one hop; 3-byte IDs unsupported by trace. "
             "No path = use your message path (round-trip)."
         )
 
@@ -133,35 +134,27 @@ class TraceCommand(BaseCommand):
         return valid
 
     def _parse_path_arg(self, content: str) -> Optional[list[str]]:
-        """Parse path from command content after the matched trigger keyword.
-        Accepts comma-separated hex nodes where each segment is the same length:
-          2-char = 1-byte (e.g. 01,7a,55), 4-char = 2-byte (e.g. feed,6ddf),
-          6-char = 3-byte (e.g. feedca,6ddf01).
-        Without commas, treats contiguous hex as 2-char (1-byte) nodes.
-        Returns list of hex node IDs, or None if no path args / invalid.
+        """Parse explicit trace hop boundaries without silently splitting IDs.
+
+        Trace flags encode 1, 2, 4 or 8-byte hashes. This command supports
+        1-/2-byte hashes only; observed 3-byte routing prefixes cannot be
+        transmitted as 3-byte trace hashes.
         """
         _trigger, rest = self.split_trigger_and_args(content)
+        rest = rest.strip().lower()
         if not rest:
             return None
-        # Comma-separated: each segment is one node; preserves multibyte groupings
         if "," in rest:
-            parts = [p.strip().lower() for p in rest.split(",") if p.strip()]
-            if not parts:
-                return None
-            first_len = len(parts[0])
-            if first_len not in (2, 4, 6) or not all(
-                len(p) == first_len and all(c in "0123456789abcdef" for c in p)
-                for p in parts
-            ):
-                return None
-            return parts
-        # No commas: treat as contiguous hex, split into 2-char (1-byte) nodes
-        hex_chars = re.sub(r"\s+", "", rest).lower()
-        if not hex_chars or len(hex_chars) % 2 != 0:
+            parts = [part.strip() for part in rest.split(",")]
+        else:
+            # Important: 'a53e' means ONE 2-byte hop, not 'a5,3e'.
+            # Do not guess the width of a contiguous multi-hop hex string.
+            parts = [rest]
+        if not parts or not all(re.fullmatch(r"[0-9a-f]{2}|[0-9a-f]{4}", p) for p in parts):
             return None
-        if not all(c in "0123456789abcdef" for c in hex_chars):
+        if len({len(p) for p in parts}) != 1:
             return None
-        return [hex_chars[i : i + 2] for i in range(0, len(hex_chars), 2)]
+        return parts
 
     def _build_reciprocal_path(self, nodes: list[str]) -> list[str]:
         """Build round-trip path: [01,7a,55] -> [01,7a,55,7a,01] (out then back without duplicating destination)."""
@@ -221,6 +214,13 @@ class TraceCommand(BaseCommand):
         # Reciprocal round-trip only when the tracer stem is used (not aliases of trace)
         is_tracer = trigger == "tracer"
         path_arg = self._parse_path_arg(message.content)
+        if _args.strip() and path_arg is None:
+            await self.send_response(
+                message,
+                "Invalid trace path. Use comma-separated 1-/2-byte hops "
+                "(a5,3e or a53e). 3-byte hashes are not supported.",
+            )
+            return True
         if path_arg is not None:
             path_nodes = path_arg[: self.maximum_hops]
         else:
@@ -252,7 +252,7 @@ class TraceCommand(BaseCommand):
 
         # Auto-detect flags from path element length: 2-char=1-byte→0, 4-char=2-byte→1
         node_len = len(path_nodes[0]) if path_nodes else 2
-        flags = {2: 0, 4: 1}.get(node_len, 0)
+        flags = {2: 0, 4: 1}[node_len]
 
         result = await run_trace(
             self.bot,
