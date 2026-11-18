@@ -325,8 +325,8 @@ class AutotraceCommand(BaseCommand):
                 return tokens
         return None
 
-    def _graph_candidates(self, conn, source_key, target_key, target_role,
-                          target_adverts, contacts):
+    def _graph_candidates(self, conn, source_key, target_key, target_name,
+                          target_role, target_adverts, contacts):
         """Build bounded hypotheses from source->relay and repeater graph rows.
 
         A recorded source->first-relay edge is mandatory; remaining graph
@@ -420,7 +420,7 @@ class AutotraceCommand(BaseCommand):
         ranked = sorted(
             options.items(), key=lambda x: (len(x[0]), -x[1], x[0])
         )[:3]
-        return [(route, "historical graph") for route, _ in ranked], None
+        return [(route, f"{target_name} [graph]") for route, _ in ranked], None
 
     def _proposals(self, message, target=None):
         with self.bot.db_manager.connection() as conn:
@@ -479,7 +479,8 @@ class AutotraceCommand(BaseCommand):
             if "mesh_connections" not in tables:
                 return [], "AutoTrace: mesh_connections unavailable"
             return self._graph_candidates(
-                conn, source_key, target_key, tgt[2], target_routes, contacts
+                conn, source_key, target_key, tgt[0], tgt[2],
+                target_routes, contacts
             )
 
     async def _reply(self, message, lines):
