@@ -115,10 +115,7 @@ class RoomAnnouncementsService(BaseServicePlugin):
     def _resolve_contact(self, target: str) -> dict[str, Any] | None:
         mc = self.bot.meshcore
         contacts = getattr(mc, "contacts", {})
-        if isinstance(contacts, dict):
-            entries = contacts.values()
-        else:
-            entries = contacts or []
+        entries = list(contacts.values()) if isinstance(contacts, dict) else list(contacts or [])
         matches = []
         for contact in entries:
             if not self.is_target_contact(contact):
