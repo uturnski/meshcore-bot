@@ -171,10 +171,12 @@ class RoomAnnouncementsService(BaseServicePlugin):
                     for target in self.room_servers:
                         if not self._running or not self.bot.connected:
                             break
-                        if not self._claim_hour(target, slot):
-                            continue
                         contact = self._resolve_contact(target)
                         if contact is None:
+                            continue
+                        # Canonicalize the claim to the public key so listing the
+                        # same room by both name and key never sends twice.
+                        if not self._claim_hour(_public_key(contact), slot):
                             continue
                         await self._publish(contact)
             except asyncio.CancelledError:
