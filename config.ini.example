@@ -2879,3 +2879,18 @@ enabled = false
 # api_url = https://example.com/checkins
 # api_key = YOUR_API_KEY
 # Or set CHECKIN_API_KEY in the environment (takes precedence).
+
+# One-way Room Server publisher. Disabled until you configure explicit recipients.
+# Uses the bot's existing radio connection, not a second radio process.
+# See docs/room-announcements.md. Do not commit private passwords.
+[Room_Announcements]
+enabled = false
+# Comma-separated exact Room Server advertisement names OR full 64-digit public keys
+room_servers =
+# Default guest write password; change in your local config if necessary
+password = hello
+schedule_minute = 15
+message = Hamilton MeshCore users: Join #public-1 for local Hamilton-area communications.
+login_timeout_seconds = 60
+ack_timeout_seconds = 25
+
