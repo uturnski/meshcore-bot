@@ -109,7 +109,7 @@ def test_room_only_exact_match_and_type():
     assert not service.is_target_contact({**CONTACT, "adv_name": "Hamilton Room extra"})
     assert service._resolve_contact("Hamilton Room") == CONTACT
     assert service._resolve_contact("Some Room") is None
-    assert service._resolve_contact(KEY) is None  # unconfigured target is never accepted
+    assert service._resolve_contact(KEY) == CONTACT  # full key also identifies the room
 
 
 def test_empty_servers_and_large_messages_rejected():
