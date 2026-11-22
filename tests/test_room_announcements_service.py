@@ -4,8 +4,8 @@ import configparser
 import logging
 from types import SimpleNamespace
 
-import pytest
 from meshcore.events import EventType
+import pytest
 
 from modules.service_plugins.room_announcements_service import (
     RoomAnnouncementsService,
