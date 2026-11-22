@@ -4,8 +4,7 @@ import asyncio
 import configparser
 import logging
 from types import SimpleNamespace
-
-import pytest
+from unittest import TestCase
 
 from meshcore.events import EventType
 from modules.service_plugins.room_announcements_service import RoomAnnouncementsService
@@ -112,9 +111,9 @@ def test_room_only_exact_match_and_type():
 
 
 def test_empty_servers_and_large_messages_rejected():
-    with pytest.raises(ValueError, match="room_servers"):
+    with TestCase().assertRaisesRegex(ValueError, "room_servers"):
         make_service(room_servers="")
-    with pytest.raises(ValueError, match="150"):
+    with TestCase().assertRaisesRegex(ValueError, "150"):
         make_service(message="é" * 76)
 
 
