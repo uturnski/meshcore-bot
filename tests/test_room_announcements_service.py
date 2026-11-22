@@ -1,11 +1,12 @@
 """Unit tests for the opt-in, announcement-only Room Server publisher."""
+
 import asyncio
 import configparser
 import logging
 from types import SimpleNamespace
 
-from meshcore.events import EventType
 import pytest
+from meshcore.events import EventType
 
 from modules.service_plugins.room_announcements_service import (
     RoomAnnouncementsService,
