@@ -6,11 +6,9 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from meshcore.events import EventType
 
-from modules.service_plugins.room_announcements_service import (
-    RoomAnnouncementsService,
-)
+from meshcore.events import EventType
+from modules.service_plugins.room_announcements_service import RoomAnnouncementsService
 
 
 KEY = "a1" * 32
