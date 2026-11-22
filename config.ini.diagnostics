@@ -2769,6 +2769,10 @@ channels =
 
 [Bots_Command]
 # Passive bot candidates: correlated public ping/path/test replies OR indicative names.
+# !bots / !bots list shows numbered 4-hex-key IDs and straight-line km;
+# !botsN / !bots info N shows full local details. !bots page N paginates.
+# Requires [Bot] bot_latitude/bot_longitude plus stored contact GPS fix;
+# n/a when unavailable. Prefix collisions expand IDs beyond four hex chars.
 # + = observed 2+ distinct response types, * = one, ? = name only.
 # No automatic active RF probing. Not a verified bot directory.
 # Requires upstream Stats_Command collect_stats/track_all_messages enabled;

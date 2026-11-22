@@ -24,7 +24,8 @@ class TestBots(BaseLocalTest):
             conn.execute("""CREATE TABLE complete_contact_tracking (
                 public_key TEXT, name TEXT, last_heard TEXT, role TEXT,
                 device_type TEXT, advert_count INTEGER, snr REAL,
-                hop_count INTEGER)""")
+                hop_count INTEGER, latitude REAL, longitude REAL,
+                last_advert_timestamp TEXT)""")
             conn.execute("""CREATE TABLE repeater_contacts (
                 public_key TEXT, name TEXT, last_seen TEXT,
                 device_type TEXT)""")
@@ -33,14 +34,15 @@ class TestBots(BaseLocalTest):
                 sender_id TEXT, channel TEXT, content TEXT, is_dm INTEGER)""")
 
     def add(self, name, digit="a", stamp="2026-01-01", role="repeater",
-            adverts=None, snr=None, hops=None):
-        key = digit * 64
+            adverts=None, snr=None, hops=None, lat=None, lon=None, key=None):
+        key = key or digit * 64
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
             conn.execute(
                 """INSERT INTO complete_contact_tracking
-                   (public_key, name, last_heard, role, advert_count, snr, hop_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (key, name, stamp, role, adverts, snr, hops),
+                   (public_key, name, last_heard, role, advert_count, snr,
+                    hop_count, latitude, longitude)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (key, name, stamp, role, adverts, snr, hops, lat, lon),
             )
         return key
 
@@ -61,15 +63,15 @@ class TestBots(BaseLocalTest):
         self.assertIn("No bot-name candidates", self.query(self.plugin, "!bots"))
         self.add("WeatherBot", "f")
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. ?WeatherBot", result)
+        self.assertIn("1. ?FFFF n/a", result)
 
     def test_multiple_names_and_pages(self):
         for i in range(12):
             self.add(f"Bot {i:02d}", f"{i:01x}")
         result = self.query(self.plugin, "!bots")
         self.assertIn("Bots 1/", result)
-        self.assertIn("1. ?Bot 00", result)
-        self.assertIn("2. ?Bot 01", result)
+        self.assertIn("1. ?0000 n/a", result)
+        self.assertIn("2. ?1111 n/a", result)
         items, incomplete = self.plugin._contacts()
         pages, _ = self.plugin._pages(items, 158, incomplete)
         self.assertGreater(len(pages), 1)
@@ -90,8 +92,8 @@ class TestBots(BaseLocalTest):
         result = self.query(self.plugin, "!bots1")
         self.assertIn("Bot 1/1 ? WeatherBot", result)
         self.assertIn("ID bbbbbbbbbbbb | repeater", result)
-        self.assertIn("Seen 3h | SNR -7.5dB", result)
-        self.assertIn("Ads 17 | Hops 2", result)
+        self.assertIn("Dist n/a | Seen 3h", result)
+        self.assertIn("Ads 17 | SNR -7.5dB | Hops 2", result)
         self.assertIn("Reply 0x none", result)
         self.assertNotIn(key, result)
         self.assertEqual(result, self.query(self.plugin, "!bots info 1"))
@@ -101,7 +103,7 @@ class TestBots(BaseLocalTest):
         self.message("UserX", "!ping", seconds=-10)
         self.message("ServiceAlpha", "Pong! | SNR: 5.5", seconds=-8)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *ServiceAlpha", result)
+        self.assertIn("1. *AAAA n/a", result)
         detail = self.query(self.plugin, "!bots1")
         self.assertIn("Bot 1/1 * ServiceAlpha", detail)
         self.assertIn("Reply 1x ping", detail)
@@ -117,7 +119,7 @@ class TestBots(BaseLocalTest):
         self.message("UserX", "!path", seconds=-20)
         self.message("MeshService", "7bcf33: Example Relay", seconds=-18)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. +MeshService", result)
+        self.assertIn("1. +AAAA n/a", result)
         detail = self.query(self.plugin, "!bots1")
         self.assertIn("Reply 3x path,ping,test", detail)
         self.assertIn("Bot 1/1 +", detail)
@@ -129,7 +131,7 @@ class TestBots(BaseLocalTest):
         self.message("Requester", "!path", seconds=-15)
         self.message("RouteHelper", "📡 Direct connection (0 hops)", seconds=-12)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *RouteHelper", result)
+        self.assertIn("1. *---- n/a", result)
         detail = self.query(self.plugin, "!bots1")
         self.assertIn("Reply 1x path", detail)
 
@@ -137,15 +139,15 @@ class TestBots(BaseLocalTest):
         self.message("Requester", "!test", seconds=-15)
         self.message("ServiceAgent", "ack @[Requester] | RSSI -111", seconds=-10)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *ServiceAgent", result)
+        self.assertIn("1. *---- n/a", result)
 
     def test_repeated_same_command_is_not_multi_verification(self):
         self.message("Requester", "!ping", seconds=-20)
         self.message("ServiceAgent", "Pong!", seconds=-19)
         self.message("ServiceAgent", "Pong! | extra", seconds=-18)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *ServiceAgent", result)
-        self.assertNotIn("1. +ServiceAgent", result)
+        self.assertIn("1. *---- n/a", result)
+        self.assertNotIn("1. +----", result)
         self.assertIn("Reply 2x ping", self.query(self.plugin, "!bots1"))
 
     def test_nonmatching_target_channel_window_and_dm(self):
@@ -172,7 +174,7 @@ class TestBots(BaseLocalTest):
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
             conn.execute("DROP TABLE message_stats")
         result = self.query(self.plugin, "!bots")
-        self.assertIn("WeatherBot", result)
+        self.assertIn("?BBBB n/a", result)
         self.assertIn("partial", result)
 
     def test_fallback_unknown_stats(self):
@@ -180,8 +182,42 @@ class TestBots(BaseLocalTest):
             "b"*64: {"adv_name": "WeatherBot"}
         }
         reply = self.query(self.plugin, "!bots1")
-        self.assertIn("Seen n/a | SNR n/a", reply)
-        self.assertIn("Ads n/a | Hops n/a", reply)
+        self.assertIn("Dist n/a | Seen n/a", reply)
+        self.assertIn("Ads n/a | SNR n/a | Hops n/a", reply)
+
+    def test_list_keyword_and_distance_are_read_only(self):
+        # Bot at Toronto-area reference, contact one degree west.
+        self.bot.config.getfloat = lambda _section, name, fallback=None: {
+            "bot_latitude": 43.0, "bot_longitude": -80.0
+        }.get(name, fallback)
+        self.add("WeatherBot", "a", lat=43.0, lon=-79.0)
+        listing = self.query(self.plugin, "!bots list")
+        self.assertRegex(listing, r"1\. \?AAAA 81\.\d+km")
+        detail = self.query(self.plugin, "!bots1")
+        self.assertRegex(detail, r"Dist 81\.\d+km")
+        self.assertEqual(listing, self.query(self.plugin, "!bots"))
+        self.assertEqual(listing, self.query(self.plugin, "!bots list 1"))
+
+    def test_bad_position_and_unknown_identity_show_na(self):
+        self.bot.config.getfloat = lambda _section, name, fallback=None: {
+            "bot_latitude": 43.0, "bot_longitude": -80.0
+        }.get(name, fallback)
+        self.add("WeatherBot", "a", lat=0.0, lon=0.0)
+        self.message("Requester", "!ping", seconds=-9)
+        self.message("AnonymousResponder", "Pong!", seconds=-7)
+        output = self.query(self.plugin, "!bots")
+        self.assertIn("?AAAA n/a", output)
+        self.assertIn("*---- n/a", output)
+        self.bot.config.getfloat = lambda _section, name, fallback=None: None
+        self.assertIn("n/a", self.query(self.plugin, "!bots1"))
+
+    def test_prefix_collision_expands_four_hex_digit_id(self):
+        self.add("Bot Alpha", key="a" * 64)
+        self.add("Bot Beta", key="aaaa" + "b" * 60)
+        output = self.query(self.plugin, "!bots")
+        self.assertIn("?AAAAAA n/a", output)
+        self.assertIn("?AAAABB n/a", output)
+        self.assertNotIn("?AAAA n/a", output)
 
     def test_channel_budget(self):
         for i in range(5):

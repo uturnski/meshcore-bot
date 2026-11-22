@@ -1,10 +1,11 @@
 """Passive bot-*candidate* directory from local MeshCore contacts, never RF scans.
 
-!bots [page] / !bots page N  -> numbered, paginated name list
+!bots / !bots list [page]    -> compact 4-hex-ID + straight-line distance list
 !botsN / !bots info N        -> local details for entry N (N is a list index)
 
 Names alone are guesses; correlated public ping replies are stronger but unverified.
 """
+from collections import Counter
 from datetime import datetime, timezone
 import math
 import re
@@ -82,10 +83,10 @@ def snr_display(value):
 class BotsCommand(BaseCommand):
     name = "bots"
     keywords = ["bots"]
-    description = "List locally observed ping/path/test responders and name candidates"
+    description = "List passive bot responders with cached straight-line distances"
     short_description = description
-    usage = "bots [page] | botsN | bots info N"
-    examples = ["bots", "bots page 2", "bots1"]
+    usage = "bots [list] [page] | botsN | bots info N"
+    examples = ["bots", "bots list", "bots page 2", "bots1"]
     category = "analytics"
     requires_dm = False
     cooldown_seconds = 3
@@ -109,8 +110,10 @@ class BotsCommand(BaseCommand):
 
     def get_help_text(self):
         return (
-            "bots [page]: +=multiple commands, *=single command, ?=name only. "
-            "botsN: local contact stats and responder evidence. Unverified."
+            "bots [list] [page]: + multi, * single, ? name only; "
+            "4 hex chars identify contacts (extended if ambiguous). "
+            "Distance is straight-line from configured bot position, or n/a. "
+            "botsN: contact details. Evidence unverified."
         )
 
 
@@ -322,6 +325,89 @@ class BotsCommand(BaseCommand):
         ))
         return rows, limited
 
+    def _origin(self):
+        """Configured node position; no guessed or geocoded fallback."""
+        try:
+            lat = self.bot.config.getfloat("Bot", "bot_latitude", fallback=None)
+            lon = self.bot.config.getfloat("Bot", "bot_longitude", fallback=None)
+            if lat is None or lon is None:
+                return None
+            lat, lon = float(lat), float(lon)
+            if (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180
+                and (lat, lon) != (0.0, 0.0)):
+                return lat, lon
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
+        return None
+
+    def _distance(self, full_key):
+        """Haversine km from this bot to latest valid *advertised* contact fix.
+
+        The contact database contains location evidence, not verified identity.
+        A name-only or channel-only responder without a unique key gets n/a.
+        """
+        origin = self._origin()
+        if not full_key or not origin:
+            return "n/a"
+        try:
+            with self.bot.db_manager.connection() as conn:
+                fields = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(complete_contact_tracking)"
+                    )
+                }
+                if not {"public_key", "latitude", "longitude"}.issubset(fields):
+                    return "n/a"
+                stamp = (
+                    "COALESCE(last_advert_timestamp, last_heard)"
+                    if {"last_advert_timestamp", "last_heard"}.issubset(fields)
+                    else "last_heard" if "last_heard" in fields else "rowid"
+                )
+                rows = conn.execute(
+                    f"""SELECT latitude, longitude
+                        FROM complete_contact_tracking
+                        WHERE lower(public_key) = ?
+                          AND latitude IS NOT NULL AND longitude IS NOT NULL
+                          AND NOT (latitude = 0 AND longitude = 0)
+                        ORDER BY {stamp} DESC LIMIT 50""",
+                    (full_key.lower(),),
+                ).fetchall()
+            for lat, lon in rows:
+                try:
+                    lat, lon = float(lat), float(lon)
+                    if not (math.isfinite(lat) and math.isfinite(lon)
+                        and -90 <= lat <= 90 and -180 <= lon <= 180):
+                        continue
+                    r1, r2 = map(math.radians, origin)
+                    r3, r4 = math.radians(lat), math.radians(lon)
+                    a = (math.sin((r3-r1)/2) ** 2
+                         + math.cos(r1)*math.cos(r3)
+                         * math.sin((r4-r2)/2) ** 2)
+                    km = 6371.0 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
+                    return f"{km:.1f}km"
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        except (AttributeError, sqlite3.Error, OSError) as exc:
+            self.logger.debug("bot location unavailable: %s", exc)
+        return "n/a"
+
+    @staticmethod
+    def _short_ids(records):
+        """Four hex digits normally; expand on actual identity-prefix collisions."""
+        keys = [row[0].lower() for row in records if row[0]]
+        counts = Counter(key[:4] for key in keys)
+        result = {}
+        for key in keys:
+            length = 4
+            if counts[key[:4]] > 1:
+                while length < 64 and sum(
+                    other.startswith(key[:length]) for other in keys
+                ) > 1:
+                    length += 2
+            result[key] = key[:length].upper()
+        return result
+
     def _recorded_stats(self, full_key):
         """Select the freshest stored contact row, using optional schema fields."""
         db = getattr(self.bot, "db_manager", None)
@@ -374,28 +460,26 @@ class BotsCommand(BaseCommand):
         lines = [
             f"Bot {index}/{len(records)} {badge} {label(name, 30)}",
             f"ID {key[:12] if key else 'n/a'} | {role}",
-            f"Seen {last} | SNR {snr}",
-            f"Ads {ads} | Hops {hop_text}",
+            f"Dist {self._distance(key)} | Seen {last}",
+            f"Ads {ads} | SNR {snr} | Hops {hop_text}",
             f"Reply {reply_count}x {kind_summary} ({last_response})",
             "Partial data" if limited else "Local only; unverified",
         ]
         return lines
 
     def _pages(self, records, budget, limited):
-        """Greedily pack numbered *names* under an exact conservative byte cap."""
+        """Greedily pack indexed four-hex-ID + geographic-distance entries."""
         count = len(records)
         footer = (
-            "partial +=2 *=1 ?=name"
-            if limited else "+=2 *=1 ?=name (unverified)"
+            "partial +=multi *=reply ?=name"
+            if limited else "+=multi *=reply ?=name"
         )
-        # Reserve the largest possible header, independent of final page count.
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
         space = max(1, budget - reserve - len(("\n" + footer).encode("utf-8")))
-        # Leave enough room for at least two entries even in a small
-        # channel packet; long names are abbreviated rather than hidden.
-        max_line = max(8, min(34, (space - 1) // 2))
+        ids = self._short_ids(records)
         lines = [
-            f"{i}. {'*' if record[2] == 'multi~' else '*' if record[2] == 'cmd~' else '?'}{label(record[1], max(1, max_line - len(f'{i}. *.'.encode('utf-8'))))}"
+            f"{i}. {'+' if record[2] == 'multi~' else '*' if record[2] == 'cmd~' else '?'}"
+            f"{ids.get(record[0].lower(), '----')} {self._distance(record[0])}"
             for i, record in enumerate(records, start=1)
         ]
         pages = []
@@ -437,11 +521,14 @@ class BotsCommand(BaseCommand):
             mode, number = "details", int(command.group(1))
         else:
             tokens = text.split()
-            if tokens == ["bots"]:
+            if tokens in (["bots"], ["bots", "list"]):
                 mode = "list"
             elif (len(tokens) == 2 and tokens[0] == "bots"
                   and POSITIVE.fullmatch(tokens[1])):
                 mode, number = "list", int(tokens[1])  # old page syntax
+            elif (len(tokens) == 3 and tokens[:2] == ["bots", "list"]
+                  and POSITIVE.fullmatch(tokens[2])):
+                mode, number = "list", int(tokens[2])
             elif (len(tokens) == 3 and tokens[:2] == ["bots", "page"]
                   and POSITIVE.fullmatch(tokens[2])):
                 mode, number = "list", int(tokens[2])
@@ -452,7 +539,7 @@ class BotsCommand(BaseCommand):
 
         if mode is None:
             return await self._respond_lines(
-                message, ["Usage: !bots [page] or !botsN (details)"]
+                message, ["Usage: !bots [list] [page] or !botsN (details)"]
             )
 
         records, limited = self._contacts()
