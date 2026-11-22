@@ -68,6 +68,7 @@ CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "Rate_Limits",
     "Webhook",
     "RepeaterPrefixCollision_Service",
+    "Room_Announcements",
     "DiscordBridge",
     "TelegramBridge",
     "DARC_MoWaS_Service",

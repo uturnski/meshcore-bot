@@ -414,6 +414,12 @@ class MessageHandler(MeshGraphRecorderMixin, ContactEventsMixin, RfCorrelationMi
             # An empty prefix matches the first contact here; that is long-standing
             # behavior for the display name, but the full key below requires a prefix.
             contact = self._find_contact(lambda c: c.get("public_key", "").startswith(sender_id))
+            # Announcement-only Room Servers must never invoke bot commands or replies.
+            room_publisher = getattr(self.bot, "services", {}).get("roomannouncements")
+            if (room_publisher is not None and room_publisher.is_running()
+                    and room_publisher.is_target_contact(contact)):
+                self.logger.debug("Ignoring inbound Room Server message from %s", sender_id)
+                return
             if contact:
                 # Use the contact name if available, otherwise use adv_name
                 sender_name = sanitize_name(contact.get("name", contact.get("adv_name", sender_id)))
