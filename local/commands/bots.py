@@ -111,7 +111,8 @@ class BotsCommand(BaseCommand):
     def get_help_text(self):
         return (
             "bots [list] [page]: + multi, * single, ? name only; "
-            "4 hex chars identify contacts (extended if ambiguous). "
+            "4 hex chars identify contacts (extended if ambiguous); "
+            "~ABC is a sender-label hint where no key is known. "
             "Distance is straight-line from configured bot position, or n/a. "
             "botsN: contact details. Evidence unverified."
         )
@@ -251,6 +252,24 @@ class BotsCommand(BaseCommand):
                          GROUP BY lower(sender_name), command_name""",
                     (cutoff,),
                 ).fetchall()
+                # A full sender key is saved only when the radio supplied one
+                # and the operator has not enabled Stats anonymization.
+                # Do not infer identity from a display label or packet timing.
+                known_keys = {}
+                if "sender_pubkey" in columns and required.issubset(columns):
+                    linked = conn.execute(
+                        """SELECT b.sender_name, m.sender_pubkey
+                             FROM bot_command_responses AS b
+                             JOIN message_stats AS m ON m.id = b.stats_row_id
+                             WHERE b.observed_at >= ?
+                               AND m.sender_pubkey IS NOT NULL""",
+                        (cutoff,),
+                    ).fetchall()
+                    for name, value in linked:
+                        if isinstance(value, str) and KEY.fullmatch(value):
+                            known_keys.setdefault(
+                                str(name).casefold(), set()
+                            ).add(value.lower())
                 for name, kind, count, last in rows:
                     key = str(name).casefold()
                     prior = found.setdefault(key, [str(name), 0, 0, set()])
@@ -258,7 +277,11 @@ class BotsCommand(BaseCommand):
                     prior[2] = max(prior[2], int(last))
                     prior[3].add(str(kind))
                 return {
-                    key: (item[0], item[1], item[2], tuple(sorted(item[3])))
+                    key: (
+                        item[0], item[1], item[2],
+                        tuple(sorted(item[3])),
+                        next(iter(known_keys[key])) if len(known_keys.get(key, ())) == 1 else "",
+                    )
                     for key, item in found.items()
                 }, not required.issubset(columns)
         except (AttributeError, sqlite3.Error, OSError) as exc:
@@ -311,15 +334,33 @@ class BotsCommand(BaseCommand):
         for key, name in contacts.items():
             norm = str(name).casefold()
             evidence = observed.get(norm)
-            if evidence and len(by_name.get(norm, [])) == 1:
-                rows.append((key, label(name, 90), "multi~" if len(evidence[3]) >= 2 else "cmd~", evidence[1], evidence[2], evidence[3]))
+            if evidence and (
+                len(by_name.get(norm, [])) == 1 or evidence[4] == key
+            ):
+                rows.append((
+                    key, label(name, 90),
+                    "multi~" if len(evidence[3]) >= 2 else "cmd~",
+                    evidence[1], evidence[2], evidence[3],
+                ))
                 matched.add(norm)
             elif BOT_NAME.search(name):
                 rows.append((key, label(name, 90), "name?", 0, None, ()))
-        for norm, (name, count, last, kinds) in observed.items():
+        for norm, (name, count, last, kinds, observed_key) in observed.items():
             if norm not in matched:
-                # Channel sender label may be spoofed/ambiguous; no verified key.
-                rows.append(("", label(name, 90), "multi~" if len(kinds) >= 2 else "cmd~", count, last, kinds))
+                # Full keys are only from saved radio-provided sender fields;
+                # public channel labels are not authenticated identities.
+                existing = next(
+                    (i for i, row in enumerate(rows)
+                     if observed_key and row[0] == observed_key), None
+                )
+                value = (
+                    observed_key, label(name, 90),
+                    "multi~" if len(kinds) >= 2 else "cmd~", count, last, kinds,
+                )
+                if existing is not None:
+                    rows[existing] = value
+                else:
+                    rows.append(value)
         rows.sort(key=lambda row: (
             {"multi~": 0, "cmd~": 1, "name?": 2}.get(row[2], 3), row[1].casefold(), row[0]
         ))
@@ -467,19 +508,26 @@ class BotsCommand(BaseCommand):
         ]
         return lines
 
+    @staticmethod
+    def _unresolved_label(name):
+        """Four-character display hint, clearly NOT a public key prefix."""
+        text = "".join(char for char in str(name) if char.isascii() and char.isalnum())
+        return "~" + ((text[:3]).upper() or "???")
+
     def _pages(self, records, budget, limited):
         """Greedily pack indexed four-hex-ID + geographic-distance entries."""
         count = len(records)
         footer = (
-            "partial +=multi *=reply ?=name"
-            if limited else "+=multi *=reply ?=name"
+            "partial +=multi *=reply ?=name ~=label"
+            if limited else "+=multi *=reply ?=name ~=label"
         )
         reserve = len(f"Bots {count}/{count} ({count})\n".encode("utf-8"))
         space = max(1, budget - reserve - len(("\n" + footer).encode("utf-8")))
         ids = self._short_ids(records)
         lines = [
             f"{i}. {'+' if record[2] == 'multi~' else '*' if record[2] == 'cmd~' else '?'}"
-            f"{ids.get(record[0].lower(), '----')} {self._distance(record[0])}"
+            f"{ids.get(record[0].lower(), self._unresolved_label(record[1]))} "
+            f"{self._distance(record[0])}"
             for i, record in enumerate(records, start=1)
         ]
         pages = []
