@@ -333,6 +333,7 @@ def test_manual_trigger_requires_running_service():
 class FakeCommandManager:
     def __init__(self):
         self.replies = []
+        self.monitor_channels = []
 
     async def send_response(self, message, content, **kwargs):
         self.replies.append(content)
