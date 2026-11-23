@@ -62,6 +62,22 @@ message = Network: {total_contacts} total ({total_repeaters} repeaters, {total_c
 
 Keep the entire `message = ...` value on **one physical line**. Only the six placeholders listed above are accepted; unknown names, attribute/index access, conversion flags, and format modifiers are rejected at startup. Network stats are not populated with guessed zeros when the DB is unavailable: the service logs the error and skips that hourly announcement. An oversized *rendered* message is also skipped. In both cases no hourly transmission is claimed, and a new render is attempted at the next scheduled hour.
 
+## Publish now with an admin DM
+
+An administrator can trigger the same configured Room Server message **immediately**, without waiting for `schedule_minute`. Send a direct message to the bot:
+
+```text
+announce.room
+```
+
+The spelling `annouce.room` is also supported. Apply the bot's normal command prefix if `[Bot] require_command_prefix = true` (for example, `!announce.room` when the configured prefix is `!`). The trigger accepts no arguments; it only publishes the message from `[Room_Announcements] message`, including current network-statistics placeholders, to every configured room.
+
+**Authorization:** Only DMs from full public keys in `[Admin_ACL] admin_pubkeys` may invoke the command. Set up the sender's *companion public key* there (not the Room Server's key). This uses the bot's standard admin ACL and is **independent** of `[Announcements_Command] enabled`: the old channel announcements command can remain off. The Room Announcements **service itself must be running**.
+
+The command replies privately with counts of `ACK`, `unconfirmed`, `failed`, and `skipped` Room Servers. An ACK is from the addressed Room Server, not all readers. A failed login or missing Room Server contact is counted as failed; a missing post ACK is unconfirmed and not automatically retried. Manual triggers have a default **60-second cooldown** (configurable as `manual_cooldown_seconds = 60`, range 30–3600) and cannot overlap each other or the scheduled job.
+
+Manual sends outside the configured minute **do not consume or reset** hourly send claims. When an admin invokes the command during the scheduled minute, both paths share the same per-room persisted deduplication marker, so no room is sent the scheduled announcement twice in that hour. When the manually rendered message exceeds 150 UTF-8 bytes or the statistics database is unavailable, the command reports that it was skipped and does not send.
+
 ## What happens each hour
 
 1. The plugin resolves optional network-statistics placeholders and verifies the **rendered message fits 150 UTF-8 bytes**; only then does it claim the hour/server in the bot's metadata database **before transmitting**. It skips an already-claimed hour, including after a service restart.
