@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import string
 from typing import Any
 
 from meshcore.events import EventType
@@ -17,6 +18,31 @@ from .base_service import BaseServicePlugin
 ROOM_TYPE = 3  # MeshCore AdvType.CHAT / Room Server
 MAX_MESSAGE_BYTES = 150
 CHECK_INTERVAL_SECONDS = 5
+MAX_TEMPLATE_BYTES = 2048
+STAT_FIELDS = (
+    "total_contacts",
+    "total_repeaters",
+    "total_companions",
+    "new_repeaters_7d",
+    "new_companions_7d",
+    "recent_activity_24h",
+)
+
+
+def _template_fields(template: str) -> frozenset[str]:
+    """Only allow the documented numeric fields; reject attribute/index lookup."""
+    fields: set[str] = set()
+    try:
+        for _, field, format_spec, conversion in string.Formatter().parse(template):
+            if field is None:
+                continue
+            if field not in STAT_FIELDS or format_spec or conversion:
+                raise ValueError(f"Unsupported placeholder {{{field}}}")
+            fields.add(field)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Room announcement template: {exc}") from exc
+    return frozenset(fields)
+
 
 
 def _public_key(contact: dict[str, Any]) -> str:
@@ -43,7 +69,7 @@ class RoomAnnouncementsService(BaseServicePlugin):
         {"key": "password", "label": "Guest password", "type": "password", "default": "hello",
          "help": "Write-capable Room Server login password. Default guest password: hello."},
         {"key": "message", "label": "Announcement text", "type": "str", "default": "",
-         "help": "One short announcement, at most 150 UTF-8 bytes."},
+         "help": "Static text or network-stat placeholders; rendered result must be 1-150 UTF-8 bytes."},
         {"key": "schedule_minute", "label": "Minute of every hour", "type": "int",
          "min": 0, "max": 59, "default": 15,
          "help": "Publish once per server per local hour at this minute."},
@@ -70,10 +96,15 @@ class RoomAnnouncementsService(BaseServicePlugin):
 
         if not self.room_servers:
             raise ValueError("[Room_Announcements] requires room_servers")
-        if not self.message or len(self.message.encode("utf-8")) > MAX_MESSAGE_BYTES:
-            raise ValueError("Room announcement must contain 1-150 UTF-8 bytes")
+        if not self.message:
+            raise ValueError("Room announcement message is required")
         if any(ch in self.message for ch in "\r\n"):
             raise ValueError("Room announcement must be a single line")
+        if len(self.message.encode("utf-8")) > MAX_TEMPLATE_BYTES:
+            raise ValueError("Room announcement template is too long")
+        self._stats_fields = _template_fields(self.message)
+        if not self._stats_fields and len(self.message.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            raise ValueError("Room announcement must contain 1-150 UTF-8 bytes")
         if not 0 <= self.schedule_minute <= 59:
             raise ValueError("schedule_minute must be between 0 and 59")
         if not 5 <= self.login_timeout <= 180 or not 5 <= self.ack_timeout <= 120:
@@ -160,7 +191,70 @@ class RoomAnnouncementsService(BaseServicePlugin):
             self.logger.error("Room announcements: cannot persist send claim: %s", exc)
             return False
 
+    def _load_network_stats(self) -> dict[str, int]:
+        """Read one consistent snapshot from the existing contact-tracking table.
+
+        The repeater manager stores first_heard/last_heard as host-local naive
+        datetimes. Match those with SQLite localtime, not UTC thresholds.
+        """
+        db = getattr(self.bot, "db_manager", None)
+        if db is None:
+            raise RuntimeError("No contact-tracking database")
+        with db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(CASE WHEN role = 'repeater' THEN 1 END),
+                       COUNT(CASE WHEN role = 'companion' THEN 1 END),
+                       COUNT(CASE WHEN role = 'repeater'
+                                   AND first_heard >= datetime('now','localtime','-7 days')
+                                  THEN 1 END),
+                       COUNT(CASE WHEN role = 'companion'
+                                   AND first_heard >= datetime('now','localtime','-7 days')
+                                  THEN 1 END),
+                       COUNT(CASE WHEN last_heard >= datetime('now','localtime','-1 day')
+                                  THEN 1 END)
+                FROM complete_contact_tracking
+                """
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Contact-tracking statistics unavailable")
+        return dict(zip(STAT_FIELDS, (int(value or 0) for value in row)))
+
+    async def _render_message(self) -> str | None:
+        """Resolve statistics before any login or per-hour send claim.
+
+        Never post placeholders, truncate UTF-8 bytes, or silently substitute
+        zeros when the database query fails.
+        """
+        try:
+            fields = (
+                await asyncio.to_thread(self._load_network_stats)
+                if self._stats_fields else {}
+            )
+            message = self.message.format_map(fields)
+            size = len(message.encode("utf-8"))
+            if not 1 <= size <= MAX_MESSAGE_BYTES:
+                self.logger.error(
+                    "Room announcements: rendered message is %d UTF-8 bytes (limit %d); "
+                    "skipping this hour", size, MAX_MESSAGE_BYTES,
+                )
+                return None
+            if self._stats_fields:
+                self.logger.info(
+                    "Room announcements: rendered message (%d bytes): %s", size, message,
+                )
+            return message
+        except Exception:
+            self.logger.exception(
+                "Room announcements: failed to render network statistics; "
+                "skipping this hour"
+            )
+            return None
+
     async def _run(self) -> None:
+        last_render_slot: str | None = None
+        rendered_message: str | None = None
         while self._running:
             try:
                 now = self.bot.scheduler.get_current_time()
@@ -168,6 +262,12 @@ class RoomAnnouncementsService(BaseServicePlugin):
                         and self.bot.meshcore is not None):
                     # Include UTC offset to distinguish the repeated DST fall-back hour.
                     slot = now.strftime("%Y-%m-%dT%H%z")
+                    if slot != last_render_slot:
+                        rendered_message = await self._render_message()
+                        last_render_slot = slot
+                    if rendered_message is None:
+                        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                        continue
                     for target in self.room_servers:
                         if not self._running or not self.bot.connected:
                             break
@@ -178,14 +278,14 @@ class RoomAnnouncementsService(BaseServicePlugin):
                         # same room by both name and key never sends twice.
                         if not self._claim_hour(_public_key(contact), slot):
                             continue
-                        await self._publish(contact)
+                        await self._publish(contact, rendered_message)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.logger.exception("Room announcements: scheduler iteration failed")
             await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
-    async def _publish(self, contact: dict[str, Any]) -> None:
+    async def _publish(self, contact: dict[str, Any], message: str) -> None:
         """Login, send once, then logout. Receive-side commands are never handled."""
         mc = self.bot.meshcore
         prefix = _public_key(contact)[:12]
@@ -226,7 +326,7 @@ class RoomAnnouncementsService(BaseServicePlugin):
             # Exactly one RF send: retry helper is used only for ACK correlation.
             # Without an ACK, delivery is UNKNOWN and we deliberately do not resend.
             ack = await mc.commands.send_msg_with_retry(
-                contact, self.message, max_attempts=1, max_flood_attempts=1,
+                contact, message, max_attempts=1, max_flood_attempts=1,
                 timeout=self.ack_timeout, min_timeout=self.ack_timeout,
             )
             if ack is not None and ack.type != EventType.ERROR:
