@@ -256,7 +256,11 @@ class BotsCommand(BaseCommand):
                 # and the operator has not enabled Stats anonymization.
                 # Do not infer identity from a display label or packet timing.
                 known_keys = {}
-                if "sender_pubkey" in columns and required.issubset(columns):
+                anonymized = self.bot.config.getboolean(
+                    "Stats_Command", "anonymize_users", fallback=False
+                )
+                if (not anonymized and "sender_pubkey" in columns
+                        and required.issubset(columns)):
                     linked = conn.execute(
                         """SELECT b.sender_name, m.sender_pubkey
                              FROM bot_command_responses AS b
@@ -335,8 +339,8 @@ class BotsCommand(BaseCommand):
             norm = str(name).casefold()
             evidence = observed.get(norm)
             if evidence and (
-                evidence[4] == key if evidence[4]
-                else len(by_name.get(norm, [])) == 1
+                evidence[4] == key
+                or (not evidence[4] and len(by_name.get(norm, [])) == 1)
             ):
                 rows.append((
                     key, label(name, 90),
