@@ -3,6 +3,9 @@
 import asyncio
 import configparser
 import logging
+import sqlite3
+from contextlib import nullcontext
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest import TestCase
 
@@ -78,7 +81,7 @@ class FakeDb:
         self.data[name] = value
 
 
-def make_service(mesh=None, *, message=MESSAGE, room_servers="Hamilton Room"):
+def make_service(mesh=None, *, message=MESSAGE, room_servers="Hamilton Room", db=None):
     config = configparser.ConfigParser()
     config["Room_Announcements"] = {
         "enabled": "true",
@@ -93,7 +96,7 @@ def make_service(mesh=None, *, message=MESSAGE, room_servers="Hamilton Room"):
         config=config,
         logger=logging.getLogger("test-room-announcements"),
         meshcore=mesh or FakeMesh(),
-        db_manager=FakeDb(),
+        db_manager=db if db is not None else FakeDb(),
         connected=True,
         scheduler=SimpleNamespace(get_current_time=lambda: None),
     )
@@ -130,7 +133,7 @@ def test_hour_claim_survives_new_service_instance():
 def test_publish_requires_successful_login_and_only_sends_once():
     mesh = FakeMesh()
     service = make_service(mesh)
-    asyncio.run(service._publish(CONTACT))
+    asyncio.run(service._publish(CONTACT, service.message))
     assert mesh.logins == 1
     assert mesh.logouts == 1
     assert len(mesh.sent) == 1
@@ -141,7 +144,7 @@ def test_publish_requires_successful_login_and_only_sends_once():
 def test_failed_room_login_never_posts():
     mesh = FakeMesh(login_event=EventType.LOGIN_FAILED)
     service = make_service(mesh)
-    asyncio.run(service._publish(CONTACT))
+    asyncio.run(service._publish(CONTACT, service.message))
     assert mesh.logins == 1
     assert mesh.logouts == 0
     assert mesh.sent == []
@@ -152,6 +155,93 @@ def test_no_ack_does_not_retry():
     mesh = FakeMesh()
     mesh.acked = False
     service = make_service(mesh)
-    asyncio.run(service._publish(CONTACT))
+    asyncio.run(service._publish(CONTACT, service.message))
     assert len(mesh.sent) == 1
     assert mesh.logouts == 1
+
+
+class FakeStatsDb(FakeDb):
+    def __init__(self, *, create_table=True):
+        super().__init__()
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        if create_table:
+            self.conn.execute(
+                "CREATE TABLE complete_contact_tracking "
+                "(role TEXT, first_heard TEXT, last_heard TEXT)"
+            )
+
+    def connection(self):
+        return nullcontext(self.conn)
+
+
+STATS_TEMPLATE = (
+    "Network: {total_contacts} total ({total_repeaters} repeaters, "
+    "{total_companions} companions). {new_repeaters_7d} new repeaters, "
+    "{new_companions_7d} new companions in last 7d. "
+    "{recent_activity_24h} active in 24h."
+)
+
+
+def test_network_stats_are_rendered_from_contact_history():
+    db = FakeStatsDb()
+    now = datetime.now()
+    rows = [
+        ("repeater", now, now),
+        ("repeater", now - timedelta(days=10), now - timedelta(days=3)),
+        ("companion", now - timedelta(days=1), now),
+        ("companion", now - timedelta(days=20), now - timedelta(days=2)),
+        ("roomserver", now - timedelta(days=2), now),
+    ]
+    db.conn.executemany(
+        "INSERT INTO complete_contact_tracking VALUES (?, ?, ?)",
+        [(role, first.isoformat(" "), last.isoformat(" ")) for role, first, last in rows],
+    )
+    service = make_service(message=STATS_TEMPLATE, db=db)
+    assert len(STATS_TEMPLATE.encode("utf-8")) > 150
+
+    rendered = asyncio.run(service._render_message())
+    assert rendered == (
+        "Network: 5 total (2 repeaters, 2 companions). 1 new repeaters, "
+        "1 new companions in last 7d. 3 active in 24h."
+    )
+    assert len(rendered.encode("utf-8")) <= 150
+
+    asyncio.run(service._publish(CONTACT, rendered))
+    assert len(service.bot.meshcore.sent) == 1
+    assert service.bot.meshcore.sent[0][1] == rendered
+    db.conn.close()
+
+
+def test_dynamic_render_rejects_oversized_utf8_payload():
+    db = FakeStatsDb()
+    service = make_service(message="{total_contacts} " + "é" * 75, db=db)
+    assert asyncio.run(service._render_message()) is None
+    assert not service._claimed
+    assert service.bot.meshcore.sent == []
+    db.conn.close()
+
+
+def test_network_stats_unavailable_skips_instead_of_reporting_zeros():
+    db = FakeStatsDb(create_table=False)
+    service = make_service(message="Nodes: {total_contacts}", db=db)
+    assert asyncio.run(service._render_message()) is None
+    assert service.bot.meshcore.sent == []
+    db.conn.close()
+
+
+def test_unknown_and_unsafe_placeholder_rejected_at_startup():
+    for template in (
+        "{not_a_stat}",
+        "{total_contacts.__class__}",
+        "{total_contacts[0]}",
+        "{total_contacts!r}",
+        "{total_contacts:>6}",
+        "Broken {total_contacts",
+    ):
+        with TestCase().assertRaisesRegex(ValueError, "template"):
+            make_service(message=template)
+
+
+def test_static_announcement_still_works_without_stats_db():
+    service = make_service(message="Hamilton users: Join #public-1")
+    assert asyncio.run(service._render_message()) == "Hamilton users: Join #public-1"
