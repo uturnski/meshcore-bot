@@ -232,6 +232,20 @@ class TestBots(BaseLocalTest):
         self.assertNotIn("*AAAA", output)
         self.assertNotIn("*BBBB", output)
 
+    def test_anonymization_disables_identity_linking_from_existing_rows(self):
+        self.message("Requester", "!ping", seconds=-15)
+        self.message(
+            "RouteHelper", "Pong!", seconds=-12,
+            pubkey="a1b2" + "c" * 60,
+        )
+        self.bot.config.getboolean = (
+            lambda section, field, fallback=False:
+            True if (section, field) == ("Stats_Command", "anonymize_users")
+            else fallback
+        )
+        self.assertIn("*~ROU n/a", self.query(self.plugin, "!bots"))
+        self.assertNotIn("*A1B2", self.query(self.plugin, "!bots"))
+
     def test_old_message_stats_schema_keeps_name_hint(self):
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
             conn.execute("DROP TABLE message_stats")
