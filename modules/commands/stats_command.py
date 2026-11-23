@@ -4,6 +4,7 @@ Stats command for the MeshCore Bot
 Provides comprehensive statistics about bot usage, messages, and activity
 """
 
+import re
 import time
 from typing import Any, Optional
 
@@ -98,6 +99,7 @@ class StatsCommand(BaseCommand):
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp INTEGER NOT NULL,
                         sender_id TEXT NOT NULL,
+                        sender_pubkey TEXT,
                         channel TEXT,
                         content TEXT NOT NULL,
                         is_dm BOOLEAN NOT NULL,
@@ -108,6 +110,15 @@ class StatsCommand(BaseCommand):
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+
+                # Existing installs also need the optional key column.
+                existing = {
+                    row[1] for row in cursor.execute("PRAGMA table_info(message_stats)")
+                }
+                if "sender_pubkey" not in existing:
+                    cursor.execute(
+                        "ALTER TABLE message_stats ADD COLUMN sender_pubkey TEXT"
+                    )
 
                 # Create command_stats table for tracking bot commands
                 cursor.execute('''
@@ -172,15 +183,31 @@ class StatsCommand(BaseCommand):
                 import hashlib
                 sender_id = f"user_{hashlib.md5(sender_id.encode()).hexdigest()[:8]}"
 
+            # A public channel display label is not a verified sender
+            # identity. Retain a key only when the radio exposed a complete
+            # value, and never when anonymization was requested.
+            key = getattr(message, "sender_pubkey", None)
+            sender_pubkey = (
+                key.lower() if (
+                    not self.anonymize_users
+                    and not message.is_dm
+                    and sender_id.casefold() not in ("", "unknown", "channel user")
+                    and isinstance(key, str)
+                    and re.fullmatch(r"[0-9a-fA-F]{64}", key)
+                ) else None
+            )
+
             with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO message_stats
-                    (timestamp, sender_id, channel, content, is_dm, hops, snr, rssi, path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (timestamp, sender_id, sender_pubkey, channel, content,
+                     is_dm, hops, snr, rssi, path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     message.timestamp or int(time.time()),
                     sender_id,
+                    sender_pubkey,
                     message.channel,
                     message.content,
                     message.is_dm,
