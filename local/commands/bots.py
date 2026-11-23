@@ -335,7 +335,8 @@ class BotsCommand(BaseCommand):
             norm = str(name).casefold()
             evidence = observed.get(norm)
             if evidence and (
-                len(by_name.get(norm, [])) == 1 or evidence[4] == key
+                evidence[4] == key if evidence[4]
+                else len(by_name.get(norm, [])) == 1
             ):
                 rows.append((
                     key, label(name, 90),
