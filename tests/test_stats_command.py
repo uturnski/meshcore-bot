@@ -173,6 +173,54 @@ class TestRecordMessage:
         # Verify row inserted
         # Since we used in-memory DB in _make_db_manager, we just assert no exception was raised
 
+    def test_record_message_saves_complete_channel_pubkey_if_not_anonymized(self):
+        bot = _make_bot(enabled=True)
+        cmd = StatsCommand(bot)
+        msg = mock_message(content="Pong!", channel="Public", sender_id="RouteHelper")
+        msg.sender_pubkey = "AbCd" + "a" * 60
+        msg.is_dm = False
+        cmd.record_message(msg)
+        with bot.db_manager.connection() as conn:
+            assert conn.execute(
+                "SELECT sender_pubkey FROM message_stats"
+            ).fetchone()[0] == "abcd" + "a" * 60
+
+    def test_record_message_does_not_save_unknown_or_anonymized_key(self):
+        bot = _make_bot(enabled=True)
+        cmd = StatsCommand(bot)
+        msg = mock_message(content="Pong!", channel="Public", sender_id="RouteHelper")
+        msg.is_dm = False
+        msg.sender_pubkey = "abcd"  # 6-byte prefixes or unknowns are not identities
+        cmd.record_message(msg)
+        msg.sender_pubkey = "b" * 64
+        cmd.anonymize_users = True
+        cmd.record_message(msg)
+        with bot.db_manager.connection() as conn:
+            values = conn.execute(
+                "SELECT sender_pubkey FROM message_stats ORDER BY id"
+            ).fetchall()
+        assert values == [(None,), (None,)]
+
+    def test_stats_existing_table_is_extended_without_deleting_history(self):
+        bot = _make_bot()
+        with bot.db_manager.connection() as conn:
+            conn.execute(
+                "CREATE TABLE message_stats (id INTEGER PRIMARY KEY, timestamp INTEGER, "
+                "sender_id TEXT, channel TEXT, content TEXT, is_dm BOOLEAN)"
+            )
+            conn.execute(
+                "INSERT INTO message_stats(id,timestamp,sender_id,channel,content,is_dm)"
+                " VALUES(1,1,'Old','Public','Pong!',0)"
+            )
+        StatsCommand(bot)
+        with bot.db_manager.connection() as conn:
+            fields = {row[1] for row in conn.execute("PRAGMA table_info(message_stats)")}
+            old_row = conn.execute(
+                "SELECT id, sender_pubkey FROM message_stats WHERE id = 1"
+            ).fetchone()
+        assert "sender_pubkey" in fields
+        assert old_row == (1, None)
+
     def test_record_message_disabled_collect_stats(self):
         bot = _make_bot(enabled=True)
         cmd = StatsCommand(bot)
