@@ -2897,4 +2897,8 @@ message = Hamilton MeshCore users: Join #public-1 for local Hamilton-area commun
 # Rendered result must fit 150 UTF-8 bytes; oversize or unavailable stats skip the hour.
 login_timeout_seconds = 60
 ack_timeout_seconds = 25
+# Authorized admin DMs can send "announce.room" (or "annouce.room") immediately.
+# Requires the sender's full pubkey in [Admin_ACL] admin_pubkeys, not Announcements_Command.
+# Minimum seconds between manual invocations (30-3600; default 60).
+manual_cooldown_seconds = 60
 
