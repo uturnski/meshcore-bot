@@ -276,16 +276,25 @@ Commands supported in your bot's configured `#test` channel or DM:
 | `!bots1`, `!bots2` | Details for directory item #1 or #2 (no space) |
 | `!bots info 2` / `!bots detail 2` | Equivalent detail request |
 
-Illustrative output with fictional names:
+Illustrative output (public-key prefixes and distances are fictional):
 
 ```text
 Bots 1/1 (4)
-1. +RelayAssistant
-2. *WeatherNode
-3. ?BotAlpha
-4. ?SolarBot
-+=2 *=1 ?=name (unverified)
+1. +5FD1 259.2km
+2. *~ROU n/a
+3. ?B399 59.2km
+4. ?FDD0 45.2km
++=multi *=reply ?=name ~=label
 ```
+
+Each known contact is represented by the **first four characters of its full
+public key**; prefixes expand to six or more characters on a collision.
+The marker `~` means the radio/database has **no attributable full public
+key** for this public-channel reply; the following three characters are
+from the stored *sender display label*, not from a key. `*~ROU` is
+therefore a useful hint for looking up details via `!bots2`, but **not a
+device identifier**. This avoids implying that an unknown sender has a
+known key. Distance is `n/a` without a key and an advertised position.
 
 The detail reply includes stored advert count, last-heard age, SNR, hop count,
 and the observed **reply count and types**, when enough data is available.
@@ -333,9 +342,21 @@ can miss older observations; history starts only when collection is enabled.
 Channel sender names are extracted from user-supplied text and **not**
 cryptographically authenticated. Unrelated replies, spoofed sender names, or
 responses to other concurrent requests can produce false positives; `+` is
-stronger behavioural evidence, not proof of identity or software. Only link
-a displayed responder name to a public key when exactly one stored contact
-has that name. For ambiguous or uncatalogued names, the details show `ID n/a`.
+stronger behavioural evidence, not proof of identity or software. The bot
+now stores `sender_pubkey` in `message_stats` **only when a complete
+64-hex key is available** on the received public-channel message and
+`[Stats_Command] anonymize_users = false`. Existing installations gain the
+nullable field at startup; old rows remain unchanged. A reply correlated
+to one unambiguous full sender key can use that key's short ID even when
+its display label is absent from the current contacts list. If the same
+label is associated with multiple keys, no key is selected. The radio's
+reported key is still not proof that the human-readable sender name is
+authentic.
+
+If no full key is known, `!bots` displays `~ABC` from the sender label
+rather than `----`, while `!botsN` still reports `ID n/a`. Previously
+recorded keyless responses **cannot be retroactively assigned a public key**
+unless newer data supplies that linkage.
 
 Raw message contents are read locally for detection but not included in
 responses; only the observed name, command type, time, and source DB row ID
@@ -348,7 +369,9 @@ The directories remain limited to 158 UTF-8 bytes for DMs and smaller limits
 for public channels. Names are truncated safely and list numbering can change
 as contacts or observations change. Refresh `!bots` before selecting `!botsN`.
 
-Install the updated `local/commands/bots.py`, merge the `[Bots_Command]`
+Deploy the updated `local/commands/bots.py` **and**
+`modules/commands/stats_command.py` together so future correlated public
+replies can retain full sender keys when available. Merge the `[Bots_Command]`
 settings from [the config example](examples/mesh-diagnostics.ini), and restart.
 To disable, set `enabled = false`; for DM-only listing set `channels =`.
 Include `bots` in `[Keywords] help` if you use a static help override.
