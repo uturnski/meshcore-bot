@@ -338,25 +338,23 @@ class RoomAnnouncementsService(BaseServicePlugin):
                     # Include UTC offset to distinguish the repeated DST fall-back hour.
                     slot = now.strftime("%Y-%m-%dT%H%z")
                     async with self._publish_lock:
-                        # Manual publication may have held the lock past :00.
-                        if self.bot.scheduler.get_current_time().minute != self.schedule_minute:
-                            continue
-                        if slot != last_render_slot:
-                            rendered_message = await self._render_message()
-                            last_render_slot = slot
-                        if rendered_message is None:
-                            continue
-                        for target in self.room_servers:
-                            if not self._running or not self.bot.connected:
-                                break
-                            contact = self._resolve_contact(target)
-                            if contact is None:
-                                continue
-                            # Canonicalize the claim to the public key so listing
-                            # the same room by both name and key sends once.
-                            if not self._claim_hour(_public_key(contact), slot):
-                                continue
-                            await self._publish(contact, rendered_message)
+                        # Manual publication may have held the lock past this hour.
+                        current_slot = self.bot.scheduler.get_current_time().strftime("%Y-%m-%dT%H%z")
+                        if current_slot == slot:
+                            if slot != last_render_slot:
+                                rendered_message = await self._render_message()
+                                last_render_slot = slot
+                            if rendered_message is not None:
+                                for target in self.room_servers:
+                                    if not self._running or not self.bot.connected:
+                                        break
+                                    contact = self._resolve_contact(target)
+                                    if contact is None:
+                                        continue
+                                    # Canonicalize to key: name/key duplicates send once.
+                                    if not self._claim_hour(_public_key(contact), slot):
+                                        continue
+                                    await self._publish(contact, rendered_message)
             except asyncio.CancelledError:
                 raise
             except Exception:
