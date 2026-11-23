@@ -61,7 +61,7 @@ class RoomAnnouncementsService(BaseServicePlugin):
     """Post a short announcement to explicitly selected Room Servers hourly."""
 
     config_section = "Room_Announcements"
-    description = "One-way scheduled Room Server announcements (no commands or replies)"
+    description = "One-way scheduled and admin-triggered Room Server announcements"
 
     settings_schema = [
         {"key": "room_servers", "label": "Room Servers", "type": "list", "default": "",
@@ -77,6 +77,9 @@ class RoomAnnouncementsService(BaseServicePlugin):
          "min": 5, "max": 180, "default": 60, "unit": "s"},
         {"key": "ack_timeout_seconds", "label": "ACK wait", "type": "int",
          "min": 5, "max": 120, "default": 25, "unit": "s"},
+        {"key": "manual_cooldown_seconds", "label": "DM trigger cooldown", "type": "int",
+         "min": 30, "max": 3600, "default": 60, "unit": "s",
+         "help": "Minimum seconds between authorized manual Room Server announcements."},
     ]
 
     def __init__(self, bot: Any):
@@ -91,6 +94,9 @@ class RoomAnnouncementsService(BaseServicePlugin):
         self.schedule_minute = bot.config.getint(section, "schedule_minute", fallback=15)
         self.login_timeout = bot.config.getint(section, "login_timeout_seconds", fallback=60)
         self.ack_timeout = bot.config.getint(section, "ack_timeout_seconds", fallback=25)
+        self.manual_cooldown = bot.config.getint(section, "manual_cooldown_seconds", fallback=60)
+        self._publish_lock = asyncio.Lock()
+        self._last_manual_attempt: float | None = None
         self._task: asyncio.Task[None] | None = None
         self._claimed: set[tuple[str, str]] = set()
 
@@ -109,6 +115,8 @@ class RoomAnnouncementsService(BaseServicePlugin):
             raise ValueError("schedule_minute must be between 0 and 59")
         if not 5 <= self.login_timeout <= 180 or not 5 <= self.ack_timeout <= 120:
             raise ValueError("Room Server timeout outside supported range")
+        if not 30 <= self.manual_cooldown <= 3600:
+            raise ValueError("manual_cooldown_seconds must be between 30 and 3600")
 
     async def start(self) -> None:
         if self._running:
@@ -237,7 +245,7 @@ class RoomAnnouncementsService(BaseServicePlugin):
             if not 1 <= size <= MAX_MESSAGE_BYTES:
                 self.logger.error(
                     "Room announcements: rendered message is %d UTF-8 bytes (limit %d); "
-                    "skipping this hour", size, MAX_MESSAGE_BYTES,
+                    "skipping publication", size, MAX_MESSAGE_BYTES,
                 )
                 return None
             if self._stats_fields:
@@ -248,9 +256,76 @@ class RoomAnnouncementsService(BaseServicePlugin):
         except Exception:
             self.logger.exception(
                 "Room announcements: failed to render network statistics; "
-                "skipping this hour"
+                "skipping publication"
             )
             return None
+
+    async def publish_manual(self) -> str:
+        """Publish immediately on an authenticated DM, without waiting for the clock.
+
+        Only the command layer exposes this entry point; it checks the full
+        sender public key against Admin_ACL. Manual sends have their own
+        cooldown, but a send made during the scheduled minute participates
+        in that hour's persisted deduplication.
+        """
+        if not self.is_healthy() or not self.bot.connected or self.bot.meshcore is None:
+            return "Room announcement unavailable: service or radio offline."
+        if self._publish_lock.locked():
+            return "Room announcement already in progress."
+
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._last_manual_attempt is not None:
+            remaining = self.manual_cooldown - (now - self._last_manual_attempt)
+            if remaining > 0:
+                return f"Room announcement cooldown: {int(remaining) + 1}s remaining."
+
+        async with self._publish_lock:
+            if not self.is_healthy() or not self.bot.connected:
+                return "Room announcement unavailable: service or radio offline."
+            self._last_manual_attempt = loop.time()
+            rendered = await self._render_message()
+            if rendered is None:
+                return "Room announcement skipped: stats unavailable or message too long."
+
+            clock = self.bot.scheduler.get_current_time()
+            slot = clock.strftime("%Y-%m-%dT%H%z") if clock.minute == self.schedule_minute else None
+            acked = unconfirmed = failed = skipped = 0
+            seen: set[str] = set()
+            for target in self.room_servers:
+                if not self._running or not self.bot.connected:
+                    failed += 1
+                    continue
+                contact = self._resolve_contact(target)
+                if contact is None:
+                    failed += 1
+                    continue
+                key = _public_key(contact)
+                if key in seen:
+                    skipped += 1
+                    continue
+                seen.add(key)
+                # Avoid a second post when invoked during the scheduled minute.
+                if slot is not None and not self._claim_hour(key, slot):
+                    skipped += 1
+                    continue
+                result = await self._publish(contact, rendered)
+                if result is True:
+                    acked += 1
+                elif result is False:
+                    unconfirmed += 1
+                else:
+                    failed += 1
+
+            self.logger.info(
+                "Room announcements: manual trigger completed: %d ACK, "
+                "%d unconfirmed, %d failed, %d skipped",
+                acked, unconfirmed, failed, skipped,
+            )
+            return (
+                f"Room announcement: {acked} ACK, {unconfirmed} unconfirmed, "
+                f"{failed} failed, {skipped} skipped."
+            )
 
     async def _run(self) -> None:
         last_render_slot: str | None = None
@@ -262,30 +337,33 @@ class RoomAnnouncementsService(BaseServicePlugin):
                         and self.bot.meshcore is not None):
                     # Include UTC offset to distinguish the repeated DST fall-back hour.
                     slot = now.strftime("%Y-%m-%dT%H%z")
-                    if slot != last_render_slot:
-                        rendered_message = await self._render_message()
-                        last_render_slot = slot
-                    if rendered_message is None:
-                        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-                        continue
-                    for target in self.room_servers:
-                        if not self._running or not self.bot.connected:
-                            break
-                        contact = self._resolve_contact(target)
-                        if contact is None:
+                    async with self._publish_lock:
+                        # Manual publication may have held the lock past :00.
+                        if self.bot.scheduler.get_current_time().minute != self.schedule_minute:
                             continue
-                        # Canonicalize the claim to the public key so listing the
-                        # same room by both name and key never sends twice.
-                        if not self._claim_hour(_public_key(contact), slot):
+                        if slot != last_render_slot:
+                            rendered_message = await self._render_message()
+                            last_render_slot = slot
+                        if rendered_message is None:
                             continue
-                        await self._publish(contact, rendered_message)
+                        for target in self.room_servers:
+                            if not self._running or not self.bot.connected:
+                                break
+                            contact = self._resolve_contact(target)
+                            if contact is None:
+                                continue
+                            # Canonicalize the claim to the public key so listing
+                            # the same room by both name and key sends once.
+                            if not self._claim_hour(_public_key(contact), slot):
+                                continue
+                            await self._publish(contact, rendered_message)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.logger.exception("Room announcements: scheduler iteration failed")
             await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
-    async def _publish(self, contact: dict[str, Any], message: str) -> None:
+    async def _publish(self, contact: dict[str, Any], message: str) -> bool | None:
         """Login, send once, then logout. Receive-side commands are never handled."""
         mc = self.bot.meshcore
         prefix = _public_key(contact)[:12]
@@ -313,15 +391,15 @@ class RoomAnnouncementsService(BaseServicePlugin):
             result = await mc.commands.send_login(contact, self.password)
             if result is None or result.type == EventType.ERROR:
                 self.logger.warning("Room announcements: login request to '%s' failed", name)
-                return
+                return None
             try:
                 logged_in = await asyncio.wait_for(login_result, timeout=self.login_timeout)
             except asyncio.TimeoutError:
                 self.logger.warning("Room announcements: login timed out for '%s'", name)
-                return
+                return None
             if not logged_in:
                 self.logger.warning("Room announcements: login denied by '%s'", name)
-                return
+                return None
 
             # Exactly one RF send: retry helper is used only for ACK correlation.
             # Without an ACK, delivery is UNKNOWN and we deliberately do not resend.
@@ -331,15 +409,18 @@ class RoomAnnouncementsService(BaseServicePlugin):
             )
             if ack is not None and ack.type != EventType.ERROR:
                 self.logger.info("Room announcements: '%s' ACK received", name)
+                return True
             else:
                 self.logger.warning(
                     "Room announcements: '%s' posted once without ACK; "
                     "delivery unconfirmed; no automatic retry", name
                 )
+                return False
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Room announcements: publishing to '%s' failed", name)
+            return None
         finally:
             for sub in subscriptions:
                 try:
