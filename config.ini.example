@@ -2891,6 +2891,14 @@ room_servers =
 password = hello
 schedule_minute = 15
 message = Hamilton MeshCore users: Join #public-1 for local Hamilton-area communications.
+# Optional dynamic stats template (replace message above, keep on one line):
+# message = Nodes:{total_contacts} R:{total_repeaters} (+{new_repeaters_7d}/7d) C:{total_companions} (+{new_companions_7d}/7d) Active/24h:{recent_activity_24h}
+# Values come from the existing complete_contact_tracking database.
+# Rendered result must fit 150 UTF-8 bytes; oversize or unavailable stats skip the hour.
 login_timeout_seconds = 60
 ack_timeout_seconds = 25
+# Authorized admin DMs can send "announce.room" (or "annouce.room") immediately.
+# Requires the sender's full pubkey in [Admin_ACL] admin_pubkeys, not Announcements_Command.
+# Minimum seconds between manual invocations (30-3600; default 60).
+manual_cooldown_seconds = 60
 
