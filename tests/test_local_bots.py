@@ -31,7 +31,8 @@ class TestBots(BaseLocalTest):
                 device_type TEXT)""")
             conn.execute("""CREATE TABLE message_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER,
-                sender_id TEXT, channel TEXT, content TEXT, is_dm INTEGER)""")
+                sender_id TEXT, sender_pubkey TEXT,
+                channel TEXT, content TEXT, is_dm INTEGER)""")
 
     def add(self, name, digit="a", stamp="2026-01-01", role="repeater",
             adverts=None, snr=None, hops=None, lat=None, lon=None, key=None):
@@ -46,13 +47,13 @@ class TestBots(BaseLocalTest):
             )
         return key
 
-    def message(self, sender, content, seconds=0, channel="#test", dm=0):
+    def message(self, sender, content, seconds=0, channel="#test", dm=0, pubkey=None):
         with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
             conn.execute(
                 """INSERT INTO message_stats
-                   (timestamp, sender_id, channel, content, is_dm)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (int(time.time()) + seconds, sender, channel, content, dm),
+                   (timestamp, sender_id, sender_pubkey, channel, content, is_dm)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (int(time.time()) + seconds, sender, pubkey, channel, content, dm),
             )
 
     def test_strict_bot_name_matching(self):
@@ -131,7 +132,7 @@ class TestBots(BaseLocalTest):
         self.message("Requester", "!path", seconds=-15)
         self.message("RouteHelper", "📡 Direct connection (0 hops)", seconds=-12)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *---- n/a", result)
+        self.assertIn("1. *~ROU n/a", result)
         detail = self.query(self.plugin, "!bots1")
         self.assertIn("Reply 1x path", detail)
 
@@ -139,14 +140,14 @@ class TestBots(BaseLocalTest):
         self.message("Requester", "!test", seconds=-15)
         self.message("ServiceAgent", "ack @[Requester] | RSSI -111", seconds=-10)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *---- n/a", result)
+        self.assertIn("1. *~SER n/a", result)
 
     def test_repeated_same_command_is_not_multi_verification(self):
         self.message("Requester", "!ping", seconds=-20)
         self.message("ServiceAgent", "Pong!", seconds=-19)
         self.message("ServiceAgent", "Pong! | extra", seconds=-18)
         result = self.query(self.plugin, "!bots")
-        self.assertIn("1. *---- n/a", result)
+        self.assertIn("1. *~SER n/a", result)
         self.assertNotIn("1. +----", result)
         self.assertIn("Reply 2x ping", self.query(self.plugin, "!bots1"))
 
@@ -207,9 +208,61 @@ class TestBots(BaseLocalTest):
         self.message("AnonymousResponder", "Pong!", seconds=-7)
         output = self.query(self.plugin, "!bots")
         self.assertIn("?AAAA n/a", output)
-        self.assertIn("*---- n/a", output)
+        self.assertIn("*~ANO n/a", output)
         self.bot.config.getfloat = lambda _section, name, fallback=None: None
         self.assertIn("n/a", self.query(self.plugin, "!bots1"))
+
+    def test_saved_sender_key_used_even_without_a_contact_or_bot_name(self):
+        self.message("Requester", "!ping", seconds=-15)
+        self.message(
+            "RouteHelper", "Pong!", seconds=-12,
+            pubkey="a1b2" + "c" * 60,
+        )
+        output = self.query(self.plugin, "!bots")
+        self.assertIn("1. *A1B2 n/a", output)
+        details = self.query(self.plugin, "!bots1")
+        self.assertIn("ID a1b2cccccccc", details)
+
+    def test_ambiguous_sender_keys_do_not_assign_an_identity(self):
+        self.message("Requester", "!ping", seconds=-15)
+        self.message("RouteHelper", "Pong!", seconds=-12, pubkey="a" * 64)
+        self.message("RouteHelper", "Pong! extra", seconds=-11, pubkey="b" * 64)
+        output = self.query(self.plugin, "!bots")
+        self.assertIn("1. *~ROU n/a", output)
+        self.assertNotIn("*AAAA", output)
+        self.assertNotIn("*BBBB", output)
+
+    def test_anonymization_disables_identity_linking_from_existing_rows(self):
+        self.message("Requester", "!ping", seconds=-15)
+        self.message(
+            "RouteHelper", "Pong!", seconds=-12,
+            pubkey="a1b2" + "c" * 60,
+        )
+        self.bot.config.getboolean = (
+            lambda section, field, fallback=False:
+            True if (section, field) == ("Stats_Command", "anonymize_users")
+            else fallback
+        )
+        self.assertIn("*~ROU n/a", self.query(self.plugin, "!bots"))
+        self.assertNotIn("*A1B2", self.query(self.plugin, "!bots"))
+
+    def test_old_message_stats_schema_keeps_name_hint(self):
+        with closing(sqlite3.connect(self.db_path, isolation_level=None)) as conn:
+            conn.execute("DROP TABLE message_stats")
+            conn.execute("""CREATE TABLE message_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER,
+                sender_id TEXT, channel TEXT, content TEXT, is_dm INTEGER)""")
+            conn.execute(
+                "INSERT INTO message_stats(timestamp,sender_id,channel,content,is_dm)"
+                " VALUES(?,?,?,?,0)",
+                (int(time.time()) - 12, "Requester", "#test", "!ping"),
+            )
+            conn.execute(
+                "INSERT INTO message_stats(timestamp,sender_id,channel,content,is_dm)"
+                " VALUES(?,?,?,?,0)",
+                (int(time.time()) - 10, "RouteHelper", "#test", "Pong!"),
+            )
+        self.assertIn("*~ROU n/a", self.query(self.plugin, "!bots"))
 
     def test_prefix_collision_expands_four_hex_digit_id(self):
         self.add("Bot Alpha", key="a" * 64)
